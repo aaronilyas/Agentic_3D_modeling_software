@@ -25,12 +25,25 @@ class Document:
         self._redo: list[tuple[dict[str, Body], int]] = []
 
     @property
-    def bodies(self) -> dict[str, Body]:
-        return self._bodies
-
-    @property
     def revision(self) -> int:
         return self._revision
+
+    def references(self) -> tuple[str, ...]:
+        return tuple(self._bodies)
+
+    def has_ref(self, ref: object) -> bool:
+        return isinstance(ref, str) and ref in self._bodies
+
+    def iter_bodies(self):
+        return iter(tuple(self._bodies.values()))
+
+    def body_items(self) -> tuple[tuple[str, Body], ...]:
+        return tuple(self._bodies.items())
+
+    def copy_state(self) -> dict[str, Body]:
+        # Shallow copy: callers may edit this map, but commit is a separate step.
+        # Body values are frozen, so the copy cannot retarget a committed solid.
+        return dict(self._bodies)
 
     def peek_ref(self) -> str:
         return f"body-{self._next_serial}"

@@ -35,7 +35,13 @@ class AcpClient:
         opener = getattr(app, 'open_acp', None)
         if not callable(opener):
             raise MissingCapability(f'MISSING_CAPABILITY: {agent} real ACP CLI adapter')
-        self.transport = opener(agent, cwd=str(cwd), deterministic=True)
+        try:
+            self.transport = opener(agent, cwd=str(cwd), deterministic=True)
+        except Exception as exc:
+            message = str(exc)
+            if message.startswith('MISSING_CAPABILITY:'):
+                raise MissingCapability(message) from exc
+            raise
         case.addCleanup(self.transport.close)
         if not callable(getattr(self.transport, 'queue_tool_calls', None)):
             raise MissingCapability('MISSING_CAPABILITY: deterministic CLI model-backend injection')

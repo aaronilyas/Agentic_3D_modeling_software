@@ -113,7 +113,6 @@ class McpEndpoint:
     def __init__(self, application) -> None:
         self.application = application
         self.observed_calls: list[dict] = []
-        self.trace: list[str] = []
         self.token = secrets.token_urlsafe(32)
         self.host = "127.0.0.1"
         self.port: int | None = None
@@ -204,18 +203,21 @@ class McpEndpoint:
                 if self._closed:
                     return
                 continue
+            transport = NdjsonSocket(conn)
+            with self._clients_lock:
+                if self._closed:
+                    transport.close()
+                    return
+                self._clients.append(transport)
             thread = threading.Thread(
                 target=self._serve_connection,
-                args=(conn,),
+                args=(transport,),
                 name="jewelry-mcp-session",
                 daemon=True,
             )
             thread.start()
 
-    def _serve_connection(self, conn: socket.socket) -> None:
-        transport = NdjsonSocket(conn)
-        with self._clients_lock:
-            self._clients.append(transport)
+    def _serve_connection(self, transport: NdjsonSocket) -> None:
         try:
             try:
                 token = transport.recv_line(timeout=AUTH_TIMEOUT)
@@ -259,7 +261,6 @@ class McpSession:
         assert message is not None
         method = message.get("method")
         if "id" not in message:
-            self.endpoint.trace.append(f"notify:{method}")
             if isinstance(method, str) and method == "notifications/initialized":
                 self._initialized = True
             return None
@@ -278,7 +279,6 @@ class McpSession:
         return success(request_id, result)
 
     def _handle(self, method: str, params: object) -> object:
-        self.endpoint.trace.append(method)
         if method == "initialize":
             return self._initialize(params)
         if method == "ping":
@@ -314,7 +314,7 @@ class McpSession:
     def _tools(self) -> list[dict]:
         self.endpoint.tools_ready.set()
         tools = []
-        for name in self.endpoint.application._operations:
+        for name in self.endpoint.application.operation_names():
             schema = _CREATE_RING_SCHEMA if name == "create_ring" else _GENERIC_SCHEMA
             tools.append(
                 {
@@ -336,7 +336,7 @@ class McpSession:
             arguments = {}
         if not isinstance(arguments, dict):
             raise _RpcError(INVALID_PARAMS, "tool arguments must be an object")
-        if name not in self.endpoint.application._operations:
+        if not self.endpoint.application.has_operation(name):
             raise _RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
         envelope = self.endpoint.application.execute(name, arguments)
         self.endpoint.observed_calls.append(
@@ -359,4 +359,9 @@ class _RpcError(Exception):
 def _absolute_python() -> str:
     import sys
 
-    return str(Path(sys.executable).resolve())
+    executable = Path(sys.executable)
+    if not executable.is_absolute():
+        executable = Path.cwd() / executable
+    # A venv interpreter is often a symlink to the system Python. Resolving it
+    # drops the virtualenv prefix, so the MCP child cannot import dependencies.
+    return str(executable)

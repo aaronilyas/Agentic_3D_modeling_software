@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import math
 
-from jewelry.deps import ensure_venv_site_packages
-
-ensure_venv_site_packages()
-
-import numpy as np
 import manifold3d as mf
+import numpy as np
 
 from jewelry.errors import ContractError
 from jewelry.kernel.evaluate import bake_transform

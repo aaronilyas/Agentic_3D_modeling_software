@@ -16,10 +16,16 @@ from pathlib import Path
 from jewelry.jsonrpc import INVALID_PARAMS, dumps, error as rpc_error
 from jewelry.mock_model import MockModel, lift_envelope
 
-_CODEX_PREWARMED = False
+_CODEX_PREWARMED: str | None = None
+_DEFAULT_CODEX_ACP = "@agentclientprotocol/codex-acp@1.12.0"
+_BIN_ENV = {
+    "grok": "JEWELRY_GROK",
+    "codex": "JEWELRY_CODEX",
+    "npx": "JEWELRY_NPX",
+}
 
 
-class MissingCapability(AssertionError):
+class MissingCapability(Exception):
     """Production CLI or mock backend is unavailable."""
 
 
@@ -150,72 +156,81 @@ class AcpTransport:
 def _launch_grok(endpoint, mock: MockModel, cwd: Path) -> AcpTransport:
     grok = _which("grok")
     home = Path(tempfile.mkdtemp(prefix="jewelry-grok-home-"))
-    grok_home = home / "grok"
-    grok_home.mkdir()
-    (grok_home / "config.toml").write_text(_grok_config(mock.base_url), encoding="utf-8")
-    env = _isolated_env(home)
-    env.update(
-        {
-            "GROK_HOME": str(grok_home),
-            "XAI_API_KEY": "test",
-            "GROK_CLI_CHAT_PROXY_BASE_URL": mock.base_url,
-            "GROK_MODELS_BASE_URL": mock.base_url,
-            "GROK_AGENT_DASHBOARD": "0",
-            "GROK_SANDBOX": "off",
-        }
-    )
-    command = [
-        grok,
-        "--sandbox",
-        "off",
-        "--disable-web-search",
-        "--no-subagents",
-        "agent",
-        "--always-approve",
-        "--no-leader",
-        "--model",
-        "jewelry-mock",
-        "--cli-chat-proxy-base-url",
-        mock.base_url,
-        "--xai-api-base-url",
-        mock.base_url,
-        "stdio",
-    ]
-    return _spawn(command, env, cwd, mock, endpoint, home)
+    try:
+        grok_home = home / "grok"
+        grok_home.mkdir()
+        (grok_home / "config.toml").write_text(_grok_config(mock.base_url), encoding="utf-8")
+        env = _isolated_env(home)
+        env.update(
+            {
+                "GROK_HOME": str(grok_home),
+                "XAI_API_KEY": "test",
+                "GROK_CLI_CHAT_PROXY_BASE_URL": mock.base_url,
+                "GROK_MODELS_BASE_URL": mock.base_url,
+                "GROK_AGENT_DASHBOARD": "0",
+                "GROK_SANDBOX": "off",
+            }
+        )
+        command = [
+            grok,
+            "--sandbox",
+            "off",
+            "--disable-web-search",
+            "--no-subagents",
+            "agent",
+            "--always-approve",
+            "--no-leader",
+            "--model",
+            "jewelry-mock",
+            "--cli-chat-proxy-base-url",
+            mock.base_url,
+            "--xai-api-base-url",
+            mock.base_url,
+            "stdio",
+        ]
+        return _spawn(command, env, cwd, mock, endpoint, home)
+    except Exception:
+        shutil.rmtree(home, ignore_errors=True)
+        raise
 
 
 def _launch_codex(endpoint, mock: MockModel, cwd: Path) -> AcpTransport:
     npx = _which("npx")
     codex = _which("codex")
-    _prewarm_codex_acp(npx)
+    package = _codex_acp_spec()
+    _prewarm_codex_acp(npx, package)
     home = Path(tempfile.mkdtemp(prefix="jewelry-codex-home-"))
-    codex_home = home / "codex"
-    codex_home.mkdir()
-    (codex_home / "config.toml").write_text(
-        _codex_config(mock.base_url, cwd),
-        encoding="utf-8",
-    )
-    (codex_home / "auth.json").write_text(
-        '{"auth_mode":"apikey","OPENAI_API_KEY":"test"}\n',
-        encoding="utf-8",
-    )
-    (home / "logs").mkdir(parents=True, exist_ok=True)
-    env = _isolated_env(home)
-    env.update(
-        {
-            "CODEX_HOME": str(codex_home),
-            "CODEX_PATH": codex,
-            "OPENAI_API_KEY": "test",
-            "CODEX_API_KEY": "test",
-            "NO_BROWSER": "1",
-            "INITIAL_AGENT_MODE": "agent-full-access",
-            "MODEL_PROVIDER": "jewelry",
-            "DEFAULT_AUTH_REQUEST": dumps({"methodId": "api-key"}),
-            "APP_SERVER_LOGS": str(home / "logs"),
-        }
-    )
-    command = [npx, "-y", "@agentclientprotocol/codex-acp"]
-    return _spawn(command, env, cwd, mock, endpoint, home)
+    try:
+        codex_home = home / "codex"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            _codex_config(mock.base_url, cwd),
+            encoding="utf-8",
+        )
+        (codex_home / "auth.json").write_text(
+            '{"auth_mode":"apikey","OPENAI_API_KEY":"test"}\n',
+            encoding="utf-8",
+        )
+        (home / "logs").mkdir(parents=True, exist_ok=True)
+        env = _isolated_env(home)
+        env.update(
+            {
+                "CODEX_HOME": str(codex_home),
+                "CODEX_PATH": codex,
+                "OPENAI_API_KEY": "test",
+                "CODEX_API_KEY": "test",
+                "NO_BROWSER": "1",
+                "INITIAL_AGENT_MODE": "agent-full-access",
+                "MODEL_PROVIDER": "jewelry",
+                "DEFAULT_AUTH_REQUEST": dumps({"methodId": "api-key"}),
+                "APP_SERVER_LOGS": str(home / "logs"),
+            }
+        )
+        command = [npx, "-y", package]
+        return _spawn(command, env, cwd, mock, endpoint, home)
+    except Exception:
+        shutil.rmtree(home, ignore_errors=True)
+        raise
 
 
 def _spawn(
@@ -296,10 +311,29 @@ def _stop_process_group(proc: subprocess.Popen) -> None:
 
 
 def _which(name: str) -> str:
-    path = shutil.which(name)
-    if not path:
-        raise MissingCapability(f"MISSING_CAPABILITY: {name} CLI not found on PATH")
-    return str(Path(path).resolve())
+    env_name = _BIN_ENV[name]
+    override = os.environ.get(env_name, "").strip()
+    if override:
+        path = Path(override)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise MissingCapability(
+                f"MISSING_CAPABILITY: {name} executable {override} from {env_name} "
+                "is missing or not executable"
+            )
+        return str(path.resolve())
+    found = shutil.which(name)
+    if not found:
+        raise MissingCapability(
+            f"MISSING_CAPABILITY: {name} CLI not found on PATH; set {env_name} to an executable"
+        )
+    return str(Path(found).resolve())
+
+
+def _codex_acp_spec() -> str:
+    spec = os.environ.get("JEWELRY_CODEX_ACP", _DEFAULT_CODEX_ACP).strip()
+    if not spec:
+        raise MissingCapability("MISSING_CAPABILITY: JEWELRY_CODEX_ACP is empty")
+    return spec
 
 
 def _isolated_env(home: Path) -> dict[str, str]:
@@ -406,20 +440,33 @@ def _normalize_acp_line(text: str) -> str:
     return dumps(message)
 
 
-def _prewarm_codex_acp(npx: str) -> None:
+def _prewarm_codex_acp(npx: str, package: str) -> None:
     global _CODEX_PREWARMED
-    if _CODEX_PREWARMED:
+    if _CODEX_PREWARMED == package:
         return
+    command = [npx, "-y", "--package", package, "node", "-e", "process.exit(0)"]
     try:
-        subprocess.run(
-            [npx, "-y", "--package", "@agentclientprotocol/codex-acp", "node", "-e", "process.exit(0)"],
-            check=False,
-            capture_output=True,
-            timeout=120,
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise MissingCapability(
-            f"MISSING_CAPABILITY: could not pre-warm @agentclientprotocol/codex-acp: {exc}"
+            f"MISSING_CAPABILITY: could not pre-warm {package}: {exc}"
         ) from exc
-    _CODEX_PREWARMED = True
+    try:
+        _stdout, stderr = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        _stop_process_group(proc)
+        raise MissingCapability(
+            f"MISSING_CAPABILITY: could not pre-warm {package}: {exc}"
+        ) from exc
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace")[-500:] if stderr else ""
+        raise MissingCapability(
+            f"MISSING_CAPABILITY: could not pre-warm {package}: exit {proc.returncode} {detail}"
+        )
+    _CODEX_PREWARMED = package

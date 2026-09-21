@@ -63,6 +63,12 @@ class Application:
             "export_mesh": self._export_mesh,
         }
 
+    def operation_names(self) -> tuple[str, ...]:
+        return tuple(self._operations)
+
+    def has_operation(self, name: object) -> bool:
+        return isinstance(name, str) and name in self._operations
+
     def execute(self, operation: str, arguments: dict | None = None) -> dict:
         with self._lock:
             return self._execute(operation, arguments)
@@ -145,16 +151,16 @@ class Application:
 
     def _insert(self, operation: str, body) -> dict:
         ref = self._document.peek_ref()
-        candidate = dict(self._document.bodies)
+        candidate = self._document.copy_state()
         candidate[ref] = body
         self._fail_if_armed(operation, "after_geometry")
         self._document.commit(candidate, consume_serial=True)
         return {"ref": ref}
 
     def _replace(self, operation: str, ref: object, body) -> dict:
-        if not isinstance(ref, str) or ref not in self._document.bodies:
+        if not self._document.has_ref(ref):
             raise UnknownReference()
-        candidate = dict(self._document.bodies)
+        candidate = self._document.copy_state()
         candidate[ref] = body
         self._fail_if_armed(operation, "after_geometry")
         self._document.commit(candidate, consume_serial=False)
@@ -271,7 +277,7 @@ class Application:
         ref = arguments.get("ref")
         self._document.resolve(ref)
         candidate = {
-            key: body for key, body in self._document.bodies.items() if key != ref
+            key: body for key, body in self._document.body_items() if key != ref
         }
         self._fail_if_armed("delete", "after_geometry")
         self._document.commit(candidate, consume_serial=False)

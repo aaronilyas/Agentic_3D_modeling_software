@@ -44,7 +44,7 @@ def parse_profile(profile: object) -> dict:
 def validate_document(document: Document, profile: object) -> dict:
     rules = parse_profile(profile)
     findings: list[dict] = []
-    bodies = list(document.bodies.values())
+    bodies = list(document.iter_bodies())
     components = sum(max(1, int(body.topology().get("components", 1))) for body in bodies)
     if len(bodies) > rules["max_components"] or components > rules["max_components"]:
         findings.append({

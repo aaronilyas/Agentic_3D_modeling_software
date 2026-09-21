@@ -133,3 +133,47 @@ class HarnessTests(unittest.TestCase):
         with patch.dict('os.environ', {'JEWELRY_TEST_ADAPTER': '_nonexistent_jewelry_adapter_:create'}):
             with self.assertRaises(ModuleNotFoundError):
                 load_application()
+
+    def test_importing_jewelry_does_not_mutate_sys_path(self):
+        import importlib
+        import importlib.util
+        import sys
+        import jewelry
+        import jewelry.tessellate
+        before = list(sys.path)
+        importlib.reload(jewelry.tessellate)
+        importlib.reload(jewelry)
+        self.assertEqual(list(sys.path), before)
+        self.assertIsNone(importlib.util.find_spec('jewelry.deps'))
+
+    def test_document_copy_does_not_mutate_committed_bodies(self):
+        from jewelry.document import Document
+        from jewelry.kernel.solids import Box
+        document = Document()
+        body = Box.from_arguments([1, 1, 1], [0, 0, 0])
+        ref = document.peek_ref()
+        document.commit({ref: body}, consume_serial=True)
+        copied = document.copy_state()
+        copied.clear()
+        copied['body-9'] = body
+        self.assertEqual(document.revision, 1)
+        self.assertEqual(document.references(), (ref,))
+        self.assertEqual(document.body_items(), ((ref, body),))
+        self.assertEqual(list(document.iter_bodies()), [body])
+        self.assertIs(document.resolve(ref), body)
+        with self.assertRaises(AttributeError):
+            document.bodies[ref] = body
+
+    def test_mcp_child_keeps_the_interpreter_that_imports_dependencies(self):
+        import subprocess
+        import sys
+        from jewelry.mcp_server import _absolute_python
+        executable = _absolute_python()
+        self.assertEqual(Path(executable), Path(sys.executable))
+        probe = subprocess.run(
+            [executable, '-c', 'import jewelry, manifold3d'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr)

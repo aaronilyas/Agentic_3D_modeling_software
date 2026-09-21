@@ -1,4 +1,9 @@
-"""Local OpenAI-compatible mock. Never calls execute() or paid inference."""
+"""Deterministic local model backend for real ACP CLI sessions.
+
+``open_acp`` starts this HTTP server and points the grok or codex process at
+it. ``queue_tool_calls`` drives that real CLI. This module does not implement
+ACP or MCP, and it never calls ``execute`` or paid inference.
+"""
 
 from __future__ import annotations
 
