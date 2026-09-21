@@ -88,3 +88,43 @@ coordinates are millimetres.
 | MCP | M01–M04 |
 | ACP (one contract, Codex and Grok) | C01–C04 |
 | End to end | E01–E03 |
+
+## Desktop GUI foundation
+
+Install the optional desktop dependencies and launch on a graphical desktop:
+
+```bash
+.venv/bin/pip install -e '.[gui]'
+.venv/bin/python -m jewelry.gui
+# Alternatively: .venv/bin/jewelry-cad
+```
+
+The PySide6 window embeds PyVistaQt/VTK, with a model-tree dock and a read-only
+inspector. **Create Canonical Ring** creates an 8 mm inner-radius, 9.5 mm
+outer-radius, 4 mm wide ring through the real backend. Drag to orbit, middle-drag
+(or Shift+left-drag) to pan, and scroll to zoom. Right-click a body to select it,
+or select it in the tree. View → Fit model (`F`) frames all bodies; Reset camera
+restores the isometric orientation. Show mesh edges overlays triangle edges.
+
+File → New discards the current in-memory document and history, closes its
+Application, and creates one empty replacement. There is no persistence yet.
+Undo, Redo, and Delete selected operate on backend history. The controller calls
+only `Application.execute` for geometry and diagnostic operations; snapshots,
+tree items, selection, and VTK meshes are disposable presentation state.
+All mutations and refreshes run serially on the Qt thread. Preview chord tolerance
+is 0.02 mm; dimensions and inspection volumes are shown in mm and mm³.
+
+Run desktop integration tests separately (requires the GUI extra and a working
+Qt/OpenGL display; a configured Xvfb display can also be used):
+
+```bash
+.venv/bin/python -m unittest tests.test_gui -v
+```
+
+The six tests use real Qt widgets, backend geometry, and VTK actors/picking;
+they check camera interaction without pixel comparisons. Backend-only installs
+and the existing contract test layers do not import the GUI.
+
+This foundation has only the temporary canonical-ring action. Modeling forms,
+manufacturing/export UI, persistence, and assistant integration remain outside
+its scope. Large-document refreshes may eventually need a serialized Qt worker.
