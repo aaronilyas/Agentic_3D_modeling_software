@@ -30,3 +30,30 @@ class InvalidTransform(ContractError):
 class UnknownReference(ContractError):
     def __init__(self, message: str = "reference does not exist"):
         super().__init__("UNKNOWN_REFERENCE", message)
+
+
+class EmptyResult(ContractError):
+    """Boolean subtract with no remaining solid; empty geometry is not a solid."""
+
+    def __init__(self, message: str = "boolean operation produced empty geometry"):
+        super().__init__("EMPTY_RESULT", message)
+
+
+class ToleranceAmbiguity(ContractError):
+    """Operands sit inside the kernel gap/overlap band of 2 * KERNEL_NUMERIC_TOL."""
+
+    def __init__(
+        self,
+        message: str = "boolean operands are within the kernel numeric tolerance band",
+    ):
+        super().__init__("TOLERANCE_AMBIGUITY", message)
+
+
+class EmptyHistory(ContractError):
+    def __init__(self, message: str = "undo/redo history is empty"):
+        super().__init__("EMPTY_HISTORY", message)
+
+
+class InvalidProfile(ContractError):
+    def __init__(self, message: str = "manufacturing profile is invalid"):
+        super().__init__("INVALID_PROFILE", message)

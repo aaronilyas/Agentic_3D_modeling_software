@@ -28,6 +28,17 @@ def as_positive_dimension(value: object, name: str) -> float:
     return number
 
 
+def as_vec2(value: object, name: str) -> tuple[float, float]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise InvalidGeometry("INVALID_ARGUMENT", f"{name} must be a 2-vector")
+    if len(value) != 2:
+        raise InvalidGeometry("INVALID_ARGUMENT", f"{name} must have 2 components")
+    return (
+        as_finite_number(value[0], f"{name}[0]"),
+        as_finite_number(value[1], f"{name}[1]"),
+    )
+
+
 def as_vec3(value: object, name: str) -> tuple[float, float, float]:
     components = _three_components(value, name)
     return (
@@ -35,6 +46,14 @@ def as_vec3(value: object, name: str) -> tuple[float, float, float]:
         as_finite_number(components[1], f"{name}[1]"),
         as_finite_number(components[2], f"{name}[2]"),
     )
+
+
+def as_positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidGeometry("INVALID_ARGUMENT", f"{name} must be a positive integer")
+    if value <= 0:
+        raise InvalidGeometry("INVALID_ARGUMENT", f"{name} must be a positive integer")
+    return value
 
 
 def as_size(value: object, name: str = "size") -> tuple[float, float, float]:
