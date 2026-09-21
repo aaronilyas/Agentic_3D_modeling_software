@@ -59,6 +59,7 @@ class Controller(QObject):
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
         self._job = None
+        self.agent_controller = None
 
     @staticmethod
     def _execute(application, operation, arguments):
@@ -91,7 +92,7 @@ class Controller(QObject):
         return {key: body[key] for key in ('inner_radius', 'outer_radius')} | {
             'width': body['zmax'] - body['zmin']}
 
-    def _start(self, operation, arguments, *, synchronize=False, target=None):
+    def _start(self, operation, arguments, *, synchronize=False, target=None, reset=False):
         if self.closed or self.busy:
             return False
         self.busy = True
@@ -100,6 +101,14 @@ class Controller(QObject):
         arguments = deepcopy(arguments)
 
         def work():
+            nonlocal application
+            if reset:
+                if self.agent_controller and self.agent_controller.session:
+                    self.agent_controller.session.close()
+                    self.agent_controller.session = None
+                application.close()
+                application = self._factory()
+                self.application = application
             result = {'operation': operation, 'errors': [], 'ok': True}
 
             def call(name, args):
@@ -236,15 +245,15 @@ class Controller(QObject):
     def new_document(self):
         if self.closed or self.busy:
             return False
-        self.application.close()
-        self.application = self._factory()
         self.selected_ref = None
         self.validation = None
         self.activity.emit('New document')
-        return self.refresh()
+        return self._start('snapshot', {}, synchronize=True, reset=True)
 
     def close(self):
         if not self.closed:
             self.closed = True
+            if self.agent_controller:
+                self.agent_controller.close()
             self._pool.waitForDone()
             self.application.close()

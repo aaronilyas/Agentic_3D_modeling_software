@@ -89,7 +89,7 @@ coordinates are millimetres.
 | ACP (one contract, Codex and Grok) | C01–C04 |
 | End to end | E01–E03 |
 
-## Desktop GUI foundation
+## Desktop GUI
 
 Install the optional desktop dependencies and launch on a graphical desktop:
 
@@ -152,4 +152,66 @@ and the existing contract test layers do not import the GUI.
 The GUI uses the existing validator's semantics: analytic document validation
 checks supported wall/prong dimensions and components; export additionally checks
 mesh structure. It does not infer printability from the preview. There is no
-generic feature-parameter editor, persistence, or assistant/ACP integration yet.
+generic feature-parameter editor or document persistence yet.
+
+## Design Assistant
+
+The bottom **Design Assistant** dock operates on the same live document as the
+modeling forms. Choose **Grok** (the explicit default) or **Codex**, enter a request,
+and press **Send** or Enter. For example, after creating and selecting a ring:
+“Change the selected ring’s outer radius to 10 mm, keeping its other dimensions.”
+You can then ask for a setting or validation, or continue with the direct controls.
+
+Install/configure your chosen external CLI and its model credentials before
+launching the desktop. The panel uses that CLI’s existing environment and user
+configuration; model inference may use the configured provider. Codex also needs
+Node/npm’s `npx`; its ACP bridge is downloaded/cached on first use. The executable
+overrides listed above (`JEWELRY_GROK`, `JEWELRY_CODEX`, `JEWELRY_NPX`, and
+`JEWELRY_CODEX_ACP`) apply to the panel too. Set executable overrides to executable
+file paths. No CLI is needed for direct modeling, validation, or export.
+
+The panel never substitutes a mock response when a CLI is absent. Missing
+executables produce **MISSING_CAPABILITY** with the relevant override. Startup,
+authentication/connection, MCP discovery, and ACP protocol errors appear in the
+transcript. Configure the CLI before launch, or correct the environment and
+relaunch. No terminal interaction is required during a configured CAD session.
+An unavailable client-side filesystem/terminal capability is declined; this
+client supports CAD through Jewelry MCP. Existing CLI approval policies still
+apply. Do not rely on this desktop as a sandbox for externally configured CLIs.
+
+**CAD result** and **CAD error** entries are based on structured results from the
+live MCP server. **Assistant (agent text)** is the model’s response, not proof of
+an operation. Manufacturing findings appear in the validation dock. Agent edits
+make older validation reports visibly stale, just like manual edits. Cancel stops
+the session; already committed operations remain in history and can be undone.
+
+Only one direct or agent operation runs at a time. Model snapshots, tessellation,
+selection/inspection, and validation status refresh after each agent turn,
+including failed turns. ACP sessions are reused for the selected agent, replaced
+on agent changes, and closed on File → New or application exit. Startup, prompts,
+CAD work, and process teardown run outside the Qt event loop. The working directory
+is the absolute launch directory. The application has one authoritative document;
+MCP never launches a second CAD backend.
+
+A complete first session: launch → Create Ring → orbit/right-click to inspect →
+request an assistant edit → Undo/Redo → Validate Model → Export STL. These steps
+are all available inside the desktop. There is still no document save/reopen.
+
+Run all GUI tests, including the real Grok/Codex ACP path with deterministic local
+model inference (no paid inference):
+
+```bash
+.venv/bin/python -m unittest tests.test_gui tests.test_gui_agent -v
+# On a headless Linux test machine with Xvfb installed:
+xvfb-run -a .venv/bin/python -m unittest tests.test_gui tests.test_gui_agent -v
+```
+
+`QT_QPA_PLATFORM=offscreen` can check widgets and actor data, but may not provide
+an OpenGL framebuffer; use a desktop or Xvfb for rendered viewport verification.
+
+For Codex, the desktop defaults the bridge’s `INITIAL_AGENT_MODE` to `read-only`
+(the bridge names this “Ask for approval”). Jewelry MCP permission requests are
+approved by the client; unrelated requests are declined. An explicitly configured
+`INITIAL_AGENT_MODE` remains respected. This avoids the bridge’s default automatic
+review mode, which can require a separate reviewer model. Existing `CODEX_HOME`,
+`GROK_HOME`, model-provider settings, and authentication remain the CLI’s own.

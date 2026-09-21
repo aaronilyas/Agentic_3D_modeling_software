@@ -110,10 +110,10 @@ class Application:
     def open_mcp(self):
         return self.endpoint().open_client()
 
-    def open_acp(self, agent: str, cwd: str, deterministic: bool = True):
+    def open_acp(self, agent: str, cwd: str, deterministic: bool = True, *, cancel_event=None):
         from jewelry.acp import open_acp
 
-        return open_acp(self, agent, cwd=cwd, deterministic=deterministic)
+        return open_acp(self, agent, cwd=cwd, deterministic=deterministic, cancel_event=cancel_event)
 
     def close(self) -> None:
         with self._lock:

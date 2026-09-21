@@ -1,8 +1,10 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QMainWindow, QDockWidget, QMessageBox, QFileDialog
 
-from jewelry.gui.controller import Controller
+from jewelry.gui.controller import Controller, _Job
+from jewelry.gui.agent_controller import AgentController
+from jewelry.gui.agent_panel import AgentPanel
 from jewelry.gui.dialogs import OperationDialog, TITLES
 from jewelry.gui.model_tree import ModelTree
 from jewelry.gui.inspector import Inspector
@@ -14,7 +16,12 @@ class MainWindow(QMainWindow):
     def __init__(self, controller=None):
         super().__init__()
         self.setWindowTitle('Jewelry CAD')
-        self.resize(1200, 800)
+        self.resize(1280, 900)
+        self.setMinimumSize(960, 680)
+        self.setDockNestingEnabled(True)
+        self._closing = False
+        self._shutdown_done = False
+        self._shutdown_job = None
         self.controller = controller if controller is not None else Controller(self)
         self.operation_dialog = None
         self.viewport = Viewport(self)
@@ -25,6 +32,11 @@ class MainWindow(QMainWindow):
         self.tree_dock = self._dock('Model Tree', self.tree, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.inspector_dock = self._dock('Inspector', self.inspector, Qt.DockWidgetArea.RightDockWidgetArea)
         self.validation_dock = self._dock('Manufacturing Validation', self.validation_panel, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.agent_controller = AgentController(self.controller, self)
+        self.agent_panel = AgentPanel(self.agent_controller, self)
+        self.agent_dock = self._dock('Design Assistant', self.agent_panel, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.tabifyDockWidget(self.validation_dock, self.agent_dock)
+        self.agent_dock.raise_()
         self.actions = {}
         self._menus()
         self.resizeDocks([self.tree_dock, self.inspector_dock], [180, 280], Qt.Orientation.Horizontal)
@@ -80,7 +92,7 @@ class MainWindow(QMainWindow):
         self._action(view, 'reset', '&Reset camera', self.viewport.reset_camera)
         self._action(view, 'edges', 'Show mesh &edges', self.viewport.set_edges, checkable=True)
         view.addSeparator()
-        for dock in (self.tree_dock, self.inspector_dock, self.validation_dock):
+        for dock in (self.tree_dock, self.inspector_dock, self.validation_dock, self.agent_dock):
             view.addAction(dock.toggleViewAction())
         toolbar = self.addToolBar('Tools')
         toolbar.setObjectName('Tools')
@@ -112,6 +124,7 @@ class MainWindow(QMainWindow):
 
     def validate_model(self):
         self.validation_dock.show()
+        self.validation_dock.raise_()
         self.controller.validate()
 
     def export_stl(self):
@@ -167,11 +180,31 @@ class MainWindow(QMainWindow):
         box.open()
 
     def closeEvent(self, event):
-        # Do not block the event loop or destroy an active worker during export.
-        if self.controller.busy:
+        if self._shutdown_done:
+            super().closeEvent(event)
+            return
+        if self.controller.busy and not self.agent_controller.active:
             self.statusBar().showMessage('Please wait for the current operation to finish before closing.')
             event.ignore()
             return
+        # Resource teardown can wait for process exit; keep that off the Qt thread.
+        if self.agent_controller.session is not None or self.agent_controller.active:
+            event.ignore()
+            if not self._closing:
+                self._closing = True
+                self.setEnabled(False)
+                self.statusBar().showMessage('Closing agent and CAD resources…')
+                self._shutdown_job = _Job(self.controller.close)
+                self._shutdown_job.signals.finished.connect(self._closed)
+                QThreadPool.globalInstance().start(self._shutdown_job)
+            return
         self.controller.close()
         self.viewport.shutdown()
+        self._shutdown_done = True
         super().closeEvent(event)
+
+    def _closed(self, _result):
+        self.viewport.shutdown()
+        self._shutdown_done = True
+        self._shutdown_job = None
+        self.close()

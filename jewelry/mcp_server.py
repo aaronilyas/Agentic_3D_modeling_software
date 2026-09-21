@@ -39,6 +39,51 @@ _CREATE_RING_SCHEMA = {
 }
 
 
+# Discoverable arguments let configured models use CAD without reading source.
+_NUMBER = {"type": "number"}
+_REF = {"type": "string", "description": "Opaque live reference from snapshot"}
+_CENTER = {"type": "array", "items": _NUMBER, "minItems": 2, "maxItems": 2,
+           "description": "Document X/Y in mm"}
+_TOOL_FIELDS = {
+    "modify_ring": {"ref": _REF, "inner_radius": _NUMBER, "outer_radius": _NUMBER, "width": _NUMBER},
+    "cut_through_hole": {"ref": _REF, "center": _CENTER, "radius": _NUMBER},
+    "cut_recess": {"ref": _REF, "center": _CENTER, "radius": _NUMBER, "top_z": _NUMBER, "depth": _NUMBER},
+    "add_setting": {"ref": _REF, "center": _CENTER, "radius": _NUMBER, "base_z": _NUMBER, "height": _NUMBER},
+    "repeat_prongs": {"ref": _REF, "center": _CENTER, "orbit_radius": _NUMBER,
+                      "diameter": _NUMBER, "base_z": _NUMBER, "height": _NUMBER,
+                      "count": {"type": "integer"}, "start_angle_degrees": _NUMBER},
+    "inspect": {"ref": _REF}, "delete": {"ref": _REF},
+    "snapshot": {}, "undo": {}, "redo": {},
+    "validate": {"profile": {"type": "object", "description": "Manufacturing profile supplied by the desktop"}},
+    "export": {"ref": _REF, "path": {"type": "string", "description": "Absolute destination path"},
+               "format": {"type": "string", "enum": ["stl"]},
+               "validation": {"type": "object", "description": "Unmodified current validate result"},
+               "chord_tolerance": _NUMBER},
+}
+_TOOL_DESCRIPTIONS = {
+    "snapshot": "Read live document references, bodies, dimensions and revision before editing.",
+    "modify_ring": "Edit a plain ring in place. Supply ref and only dimensions to change, in mm.",
+    "cut_through_hole": "Cut a cylindrical hole along Z through the selected body.",
+    "cut_recess": "Cut a cylindrical seat downward from top_z by depth, in mm.",
+    "add_setting": "Union a cylinder from base_z along +Z. Overlap the body for a connected solid.",
+    "repeat_prongs": "Union vertical cylindrical prongs around center. Angles in degrees; lengths in mm.",
+    "validate": "Check the whole document. ready=false is a manufacturing finding, not a failed tool call.",
+    "export": "Export selected body as STL in mm. Requires a current successful validate report.",
+}
+
+
+def _tool_schema(name):
+    if name == "create_ring":
+        return _CREATE_RING_SCHEMA
+    fields = _TOOL_FIELDS.get(name)
+    if fields is None:
+        return _GENERIC_SCHEMA
+    required = ["ref"] if name == "modify_ring" else list(fields)
+    if name == "repeat_prongs":
+        required.remove("start_angle_degrees")
+    return {"type": "object", "properties": fields, "required": required}
+
+
 class NdjsonSocket:
     """Line-delimited JSON-RPC over a connected stream socket."""
 
@@ -120,6 +165,7 @@ class McpEndpoint:
         self._thread: threading.Thread | None = None
         self._clients: list[NdjsonSocket] = []
         self._clients_lock = threading.Lock()
+        self._sessions: set[threading.Thread] = set()
         self._closed = False
         self.tools_ready = threading.Event()
 
@@ -190,11 +236,19 @@ class McpEndpoint:
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=2)
         self._thread = None
+        with self._clients_lock:
+            sessions = list(self._sessions)
+        for session in sessions:
+            if session is not threading.current_thread():
+                session.join(timeout=2)
 
     def _accept_loop(self) -> None:
         while not self._closed and self._sock is not None:
             try:
-                conn, _addr = self._sock.accept()
+                sock = self._sock
+                if sock is None:
+                    return
+                conn, _addr = sock.accept()
             except TimeoutError:
                 continue
             except socket.timeout:
@@ -215,7 +269,12 @@ class McpEndpoint:
                 name="jewelry-mcp-session",
                 daemon=True,
             )
-            thread.start()
+            with self._clients_lock:
+                if self._closed:
+                    transport.close()
+                    return
+                self._sessions.add(thread)
+                thread.start()
 
     def _serve_connection(self, transport: NdjsonSocket) -> None:
         try:
@@ -243,6 +302,7 @@ class McpEndpoint:
         finally:
             transport.close()
             with self._clients_lock:
+                self._sessions.discard(threading.current_thread())
                 try:
                     self._clients.remove(transport)
                 except ValueError:
@@ -315,11 +375,11 @@ class McpSession:
         self.endpoint.tools_ready.set()
         tools = []
         for name in self.endpoint.application.operation_names():
-            schema = _CREATE_RING_SCHEMA if name == "create_ring" else _GENERIC_SCHEMA
+            schema = _tool_schema(name)
             tools.append(
                 {
                     "name": name,
-                    "description": f"Jewelry CAD operation {name}",
+                    "description": _TOOL_DESCRIPTIONS.get(name, f"Jewelry CAD operation {name}; lengths in mm"),
                     "inputSchema": schema,
                 }
             )

@@ -29,15 +29,17 @@ class MissingCapability(Exception):
     """Production CLI or mock backend is unavailable."""
 
 
-def open_acp(application, agent: str, cwd: str, deterministic: bool = True):
-    if not deterministic:
-        raise MissingCapability("MISSING_CAPABILITY: paid model inference is not used")
+def open_acp(application, agent: str, cwd: str, deterministic: bool = True, *, cancel_event=None):
     agent = str(agent)
     if agent not in {"grok", "codex"}:
         raise MissingCapability(f"MISSING_CAPABILITY: unknown ACP agent {agent!r}")
     cwd_path = Path(cwd)
     if not cwd_path.is_absolute():
         raise MissingCapability("MISSING_CAPABILITY: ACP cwd must be an absolute path")
+    if not cwd_path.is_dir():
+        raise MissingCapability("MISSING_CAPABILITY: ACP cwd must be an existing directory")
+    if not deterministic:
+        return _launch_configured(application, agent, cwd_path, cancel_event)
     endpoint = application.endpoint()
     mock = MockModel()
     mock.observed_len = lambda: len(endpoint.observed_calls)
@@ -49,7 +51,7 @@ def open_acp(application, agent: str, cwd: str, deterministic: bool = True):
     try:
         if agent == "grok":
             return _launch_grok(endpoint, mock, cwd_path)
-        return _launch_codex(endpoint, mock, cwd_path)
+        return _launch_codex(endpoint, mock, cwd_path, cancel_event)
     except Exception:
         mock.close()
         raise
@@ -66,7 +68,8 @@ class AcpTransport:
     ) -> None:
         self.mcp_servers = endpoint.mcp_servers()
         self.observed_calls = endpoint.observed_calls
-        mock.observed_len = lambda: len(endpoint.observed_calls)
+        if mock is not None:
+            mock.observed_len = lambda: len(endpoint.observed_calls)
         self._proc = proc
         self._mock = mock
         self._home = home
@@ -77,6 +80,8 @@ class AcpTransport:
         self._injected: list[str] = []
 
     def queue_tool_calls(self, calls: list[dict]) -> None:
+        if self._mock is None:
+            raise RuntimeError("Tool injection requires the deterministic test model")
         self._mock.queue_tool_calls(calls)
 
     def send_line(self, line: str) -> None:
@@ -132,8 +137,16 @@ class AcpTransport:
         except OSError:
             pass
         _stop_process_group(self._proc)
-        self._mock.close()
-        shutil.rmtree(self._home, ignore_errors=True)
+        if self._mock is not None:
+            self._mock.close()
+        if self._home is not None:
+            shutil.rmtree(self._home, ignore_errors=True)
+        thread = getattr(self, "_stderr_thread", None)
+        if thread is not None:
+            thread.join(timeout=2)
+        for stream in (self._proc.stdout, self._proc.stderr):
+            if stream is not None:
+                stream.close()
 
     def _read_stdout(self, timeout: float) -> bytes | None:
         stdout = self._proc.stdout
@@ -146,7 +159,7 @@ class AcpTransport:
 
     def _timeout_message(self, prefix: str = "ACP recv_line timed out") -> str:
         tail = "".join(self._stderr_lines[-40:])
-        requests = self._mock.requests[-8:]
+        requests = self._mock.requests[-8:] if self._mock is not None else []
         return (
             f"{prefix}; stderr={tail!r}; mock_requests={requests!r}; "
             f"exit={self._proc.poll()}"
@@ -194,11 +207,11 @@ def _launch_grok(endpoint, mock: MockModel, cwd: Path) -> AcpTransport:
         raise
 
 
-def _launch_codex(endpoint, mock: MockModel, cwd: Path) -> AcpTransport:
+def _launch_codex(endpoint, mock: MockModel, cwd: Path, cancel_event=None) -> AcpTransport:
     npx = _which("npx")
     codex = _which("codex")
     package = _codex_acp_spec()
-    _prewarm_codex_acp(npx, package)
+    _prewarm_codex_acp(npx, package, cancel_event)
     home = Path(tempfile.mkdtemp(prefix="jewelry-codex-home-"))
     try:
         codex_home = home / "codex"
@@ -253,7 +266,8 @@ def _spawn(
             start_new_session=True,
         )
     except OSError as exc:
-        shutil.rmtree(home, ignore_errors=True)
+        if home is not None:
+            shutil.rmtree(home, ignore_errors=True)
         raise MissingCapability(
             f"MISSING_CAPABILITY: failed to spawn {' '.join(command)}: {exc}"
         ) from exc
@@ -264,7 +278,9 @@ def _spawn(
         daemon=True,
     )
     thread.start()
-    return AcpTransport(proc, mock, endpoint, home, stderr_lines)
+    transport = AcpTransport(proc, mock, endpoint, home, stderr_lines)
+    transport._stderr_thread = thread
+    return transport
 
 
 def _drain_stderr(proc: subprocess.Popen, bucket: list[str]) -> None:
@@ -288,26 +304,19 @@ def _stop_process_group(proc: subprocess.Popen) -> None:
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
+        proc.wait()
         return
-    except OSError:
-        if proc.poll() is not None:
-            return
-        proc.terminate()
     try:
         proc.wait(timeout=2)
-        return
     except subprocess.TimeoutExpired:
         pass
+    # A parent may exit before its MCP proxy or other children. Kill remaining
+    # group members even after the parent has been reaped.
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
-        return
-    except OSError:
-        proc.kill()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
         pass
+    proc.wait(timeout=2)
 
 
 def _which(name: str) -> str:
@@ -440,7 +449,7 @@ def _normalize_acp_line(text: str) -> str:
     return dumps(message)
 
 
-def _prewarm_codex_acp(npx: str, package: str) -> None:
+def _prewarm_codex_acp(npx: str, package: str, cancel_event=None) -> None:
     global _CODEX_PREWARMED
     if _CODEX_PREWARMED == package:
         return
@@ -458,15 +467,47 @@ def _prewarm_codex_acp(npx: str, package: str) -> None:
             f"MISSING_CAPABILITY: could not pre-warm {package}: {exc}"
         ) from exc
     try:
-        _stdout, stderr = proc.communicate(timeout=120)
+        deadline = time.monotonic() + 120
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                _stop_process_group(proc)
+                raise ConnectionError("ACP startup cancelled")
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(command, 120)
+            try:
+                _stdout, stderr = proc.communicate(timeout=.2)
+                break
+            except subprocess.TimeoutExpired:
+                continue
     except subprocess.TimeoutExpired as exc:
         _stop_process_group(proc)
         raise MissingCapability(
             f"MISSING_CAPABILITY: could not pre-warm {package}: {exc}"
         ) from exc
+    finally:
+        if proc.stderr is not None:
+            proc.stderr.close()
     if proc.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace")[-500:] if stderr else ""
         raise MissingCapability(
             f"MISSING_CAPABILITY: could not pre-warm {package}: exit {proc.returncode} {detail}"
         )
     _CODEX_PREWARMED = package
+
+
+def _launch_configured(application, agent: str, cwd: Path, cancel_event=None) -> AcpTransport:
+    """Use installed CLI credentials/configuration; no synthetic model fallback."""
+    env = os.environ.copy()
+    if agent == "grok":
+        command = [_which("grok"), "--disable-web-search", "--no-subagents",
+                   "agent", "--no-leader", "stdio"]
+    else:
+        npx, codex = _which("npx"), _which("codex")
+        package = _codex_acp_spec()
+        _prewarm_codex_acp(npx, package, cancel_event)
+        env["CODEX_PATH"] = codex
+        # Avoid the bridge's automatic-review mode, which needs a separate
+        # reviewer model. The desktop answers Jewelry MCP permission requests.
+        env.setdefault("INITIAL_AGENT_MODE", "read-only")
+        command = [npx, "-y", package]
+    return _spawn(command, env, cwd, None, application.endpoint(), None)
