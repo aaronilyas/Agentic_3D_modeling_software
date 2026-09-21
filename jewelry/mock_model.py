@@ -201,6 +201,28 @@ def _is_prefetch(payload: dict, tools: list[dict], messages: list[dict]) -> bool
     return not has_user
 
 
+# Grok asks for a session title and a dashboard line between user turns.
+# Those requests include the normal tool list, so they must not take the
+# queued CAD call or mark it in flight.
+_SIDE_PROMPT_MARKERS = (
+    "Generate a session title",
+    "ultra-short dashboard line",
+)
+
+
+def _last_user_text(messages: list[dict]) -> str:
+    for item in reversed(messages):
+        role = item.get("role")
+        if role == "user" or (item.get("type") == "message" and role == "user"):
+            return _message_text(item)
+    return ""
+
+
+def _is_cli_side_prompt(messages: list[dict]) -> bool:
+    text = _last_user_text(messages)
+    return any(marker in text for marker in _SIDE_PROMPT_MARKERS)
+
+
 def _property_names(parameters: object) -> set[str]:
     if not isinstance(parameters, dict):
         return set()
@@ -507,9 +529,13 @@ class MockModel:
         tools = _normalize_tools(payload)
         messages = _messages(payload)
         current = _current_turn(messages)
-        if self._queue:
+        side_prompt = _is_cli_side_prompt(messages)
+        if self._queue and not side_prompt:
             self._wait_for_mcp()
         with self._lock:
+            if side_prompt:
+                self.decisions.append({"why": "side_prompt"})
+                return {"kind": "text", "text": "done"}
             observed = int(self.observed_len())
             executed = observed > self._baseline
             envelope = _envelope_in_messages(current)

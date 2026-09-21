@@ -177,3 +177,41 @@ class HarnessTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(probe.returncode, 0, probe.stderr)
+
+    def test_cli_side_prompts_do_not_consume_queued_tool_calls(self):
+        from jewelry.mock_model import MockModel
+        mock = MockModel()
+        use_tool = {'type': 'function', 'function': {
+            'name': 'use_tool',
+            'parameters': {'type': 'object', 'properties': {
+                'tool_name': {'type': 'string'},
+                'tool_input': {'type': 'object'},
+            }},
+        }}
+        user = {'role': 'user', 'content':
+                '<user_query>\nPerform validate with these arguments: {"profile": {"id": "mvp"}}\n</user_query>'}
+        for reminder in (
+            '<system-reminder>Generate a session title for the conversation above.</system-reminder>',
+            '<system-reminder>Write an ultra-short dashboard line that captures the AGENT\'S REPLY for the last turn only</system-reminder>',
+        ):
+            mock.queue_tool_calls([{'name': 'validate', 'arguments': {'profile': {'id': 'mvp'}}}])
+            side = mock._decide({'tools': [use_tool], 'messages': [
+                user,
+                {'role': 'assistant', 'content': 'done'},
+                {'role': 'user', 'content': reminder},
+            ]})
+            self.assertEqual(side['kind'], 'text', reminder)
+            self.assertNotIn('name', side)
+            follow = mock._decide({'tools': [use_tool], 'messages': [user]})
+            self.assertEqual(follow['kind'], 'tool', reminder)
+            self.assertEqual(follow['name'], 'use_tool')
+            self.assertEqual(follow['arguments']['tool_name'], 'jewelry__validate')
+            self.assertEqual(follow['arguments']['tool_input'], {'profile': {'id': 'mvp'}})
+        mock.queue_tool_calls([{'name': 'validate', 'arguments': {'profile': {'id': 'mvp'}}}])
+        connecting = mock._decide({'tools': [use_tool], 'messages': [
+            user,
+            {'role': 'user', 'content':
+             '<system-reminder> MCP servers currently connecting (tools will become available shortly): - jewelry'},
+        ]})
+        self.assertEqual(connecting['kind'], 'tool')
+        self.assertEqual(connecting['name'], 'use_tool')
