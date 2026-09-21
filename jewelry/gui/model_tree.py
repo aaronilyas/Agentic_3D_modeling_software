@@ -19,7 +19,6 @@ class ModelTree(QTreeWidget):
                 label = 'Ring' if body.get('kind') == 'annulus' else 'Body'
                 item = QTreeWidgetItem([f'{label} {number}'])
                 item.setData(0, Qt.ItemDataRole.UserRole, body['ref'])
-                item.setToolTip(0, body['ref'])
                 self.addTopLevelItem(item)
                 self.items_by_ref[body['ref']] = item
 

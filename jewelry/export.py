@@ -27,6 +27,9 @@ def export_body(
     destination = _require_path(path)
     _authorize(validation, document)
     mesh = tessellate_body(body, chord_tolerance)
+    findings, _metrics = mesh_findings(mesh['vertices'], mesh['triangles'])
+    if findings:
+        raise ContractError('INVALID_MESH', findings[0]['message'])
     payload = stl_bytes(mesh["vertices"], mesh["triangles"])
     publish_bytes(destination, payload)
     return {"revision": document.revision}
@@ -74,14 +77,17 @@ def publish_bytes(path: str, data: bytes) -> None:
     parent = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(parent):
         raise ContractError("INVALID_ARGUMENT", "export parent is not a directory")
-    fd, tmp = tempfile.mkstemp(prefix=".jewelry-", suffix=".tmp", dir=parent)
+    tmp = None
     try:
+        fd, tmp = tempfile.mkstemp(prefix=".jewelry-", suffix=".tmp", dir=parent)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)  # atomic publish on the same filesystem
         tmp = None
+    except OSError as exc:
+        raise ContractError('EXPORT_IO_ERROR', str(exc)) from exc
     finally:
         if tmp is not None:
             try:
@@ -93,6 +99,8 @@ def publish_bytes(path: str, data: bytes) -> None:
 def _authorize(validation: object, document: Document) -> None:
     if not isinstance(validation, dict):
         raise ContractError("INVALID_ARGUMENT", "validation must be a report object")
+    if validation.get('revision') != document.revision:
+        raise ContractError('STALE_VALIDATION', 'model changed since validation; run Validate Model again')
     rules = validation.get("rules")
     if rules is None:
         rules = validation.get("profile")

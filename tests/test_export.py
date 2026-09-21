@@ -2,6 +2,7 @@
 import math
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from tests.fixtures import (CANONICAL_VOLUME, KERNEL_NUMERIC_TOL, GEOMETRY_ABS_TOL,
                            MANUFACTURING_PROFILE, TESSELLATION_ERROR)
@@ -47,6 +48,31 @@ def jewelry_field(point):
 
 
 class ExportTests(ContractTestCase):
+    def test_stale_valid_model_structural_and_io_failures_are_atomic(self):
+        ref = self.ring()
+        report = self.ok('validate', profile=MANUFACTURING_PROFILE)
+        self.ok('modify_ring', ref=ref, outer_radius=10)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'existing.stl'
+            path.write_bytes(b'preserve existing artifact')
+            arguments = dict(ref=ref, path=str(path), format='stl', validation=report,
+                             chord_tolerance=TESSELLATION_ERROR)
+            result = self.app.execute('export', arguments)
+            self.assertEqual(result['error']['code'], 'STALE_VALIDATION')
+            self.assertEqual(path.read_bytes(), b'preserve existing artifact')
+            arguments['validation'] = self.ok('validate', profile=MANUFACTURING_PROFILE)
+            with patch('jewelry.export.tessellate_body', return_value=_open_tetrahedron()):
+                self.reject_unchanged(root, 'export', **arguments)
+                result = self.app.execute('export', arguments)
+                self.assertEqual(result['error']['code'], 'INVALID_MESH')
+            with patch('jewelry.export.os.replace', side_effect=PermissionError('destination is read-only')):
+                self.reject_unchanged(root, 'export', **arguments)
+                result = self.app.execute('export', arguments)
+                self.assertEqual(result['error']['code'], 'EXPORT_IO_ERROR')
+            self.assertEqual(list(root.iterdir()), [path])
+            self.assertEqual(path.read_bytes(), b'preserve existing artifact')
+
     def test_X01_watertight_oriented_nondegenerate_jewelry_mesh(self):
         for decorated in (False,True):
             with self.subTest(decorated=decorated):

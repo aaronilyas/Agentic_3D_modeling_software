@@ -99,9 +99,10 @@ Install the optional desktop dependencies and launch on a graphical desktop:
 # Alternatively: .venv/bin/jewelry-cad
 ```
 
-The PySide6 window embeds PyVistaQt/VTK, with a model-tree dock and a read-only
-inspector. **Create Canonical Ring** creates an 8 mm inner-radius, 9.5 mm
-outer-radius, 4 mm wide ring through the real backend. Drag to orbit, middle-drag
+The PySide6 window embeds PyVistaQt/VTK, with model-tree, inspector, and
+manufacturing-validation docks. **Modeling → Create Ring** opens numeric controls
+for inner radius, outer radius, and width, in mm. Select a plain ring and use
+**Modify Ring** in the toolbar or inspector to edit those dimensions. Drag to orbit, middle-drag
 (or Shift+left-drag) to pan, and scroll to zoom. Right-click a body to select it,
 or select it in the tree. View → Fit model (`F`) frames all bodies; Reset camera
 restores the isometric orientation. Show mesh edges overlays triangle edges.
@@ -111,8 +112,31 @@ Application, and creates one empty replacement. There is no persistence yet.
 Undo, Redo, and Delete selected operate on backend history. The controller calls
 only `Application.execute` for geometry and diagnostic operations; snapshots,
 tree items, selection, and VTK meshes are disposable presentation state.
-All mutations and refreshes run serially on the Qt thread. Preview chord tolerance
-is 0.02 mm; dimensions and inspection volumes are shown in mm and mm³.
+CAD work, inspection, tessellation, validation, and export run in a serialized
+worker; Qt/VTK rendering stays on the main thread. Document actions are disabled
+while work is running. Preview/export chord tolerance is 0.02 mm; dimensions and
+inspection volumes are shown in mm and mm³. Camera movement never enters history.
+
+The Modeling menu also provides **Cut Through-Hole**, **Cut Stone Seat / Recess**,
+**Add Setting**, and **Repeat Prongs**. Forms use document X/Y coordinates and Z
+heights; cutters and additions are cylindrical and aligned with Z. Defaults work
+with the initial ring: add setting → cut recess → repeat prongs. Adjust placement
+for other dimensions. After adding/cutting features, the combined solid no longer
+supports ring dimension editing; undo those features to edit the plain ring.
+Use Delete to remove a selection, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Shift+Z to redo.
+
+**Manufacturing → Validate Model** shows the real backend's readiness and findings,
+including severity, code, description, and any measured/required values. The
+advanced profile starts with `mvp-single-piece`: minimum wall 1 mm, minimum prong
+0.8 mm, maximum components 1. Validation applies to the whole document. Editing,
+undo, or redo makes the report stale; changing the profile requires new validation.
+
+**Manufacturing → Export STL** opens a native save chooser and exports the selected
+object in mm. Validate first. The backend rejects stale reports, rechecks current
+geometry under the report rules, and checks the export mesh using its existing
+structural diagnostics. Publication is atomic: failures preserve an existing file
+and clean up temporary output. Errors show the backend code and reason; success
+shows the final path in the status bar. STL itself has no unit metadata.
 
 Run desktop integration tests separately (requires the GUI extra and a working
 Qt/OpenGL display; a configured Xvfb display can also be used):
@@ -121,10 +145,11 @@ Qt/OpenGL display; a configured Xvfb display can also be used):
 .venv/bin/python -m unittest tests.test_gui -v
 ```
 
-The six tests use real Qt widgets, backend geometry, and VTK actors/picking;
+The tests use real Qt widgets, backend geometry, and VTK actors/picking;
 they check camera interaction without pixel comparisons. Backend-only installs
 and the existing contract test layers do not import the GUI.
 
-This foundation has only the temporary canonical-ring action. Modeling forms,
-manufacturing/export UI, persistence, and assistant integration remain outside
-its scope. Large-document refreshes may eventually need a serialized Qt worker.
+The GUI uses the existing validator's semantics: analytic document validation
+checks supported wall/prong dimensions and components; export additionally checks
+mesh structure. It does not infer printability from the preview. There is no
+generic feature-parameter editor, persistence, or assistant/ACP integration yet.
