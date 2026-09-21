@@ -25,6 +25,7 @@ class Application:
             "create_box": self._create_box,
             "create_cylinder": self._create_cylinder,
             "create_sphere": self._create_sphere,
+            "transform": self._transform,
             "inspect": self._inspect,
             "contains": self._contains,
             "snapshot": self._snapshot,
@@ -49,6 +50,11 @@ class Application:
             return _success(handler(arguments))
         except ContractError as exc:
             return _failure(exc.code, exc.message)
+        except (ArithmeticError, OverflowError) as exc:
+            return _failure(
+                "INVALID_ARGUMENT",
+                str(exc) or "numeric error during operation",
+            )
 
     def close(self) -> None:
         self._closed = True
@@ -72,6 +78,12 @@ class Application:
             arguments.get("center"),
         )
         return {"ref": self._document.insert(body)}
+
+    def _transform(self, arguments: dict) -> dict:
+        ref = arguments.get("ref")
+        body = self._document.resolve(ref)
+        candidate = self._kernel.transform(body, arguments.get("matrix"))
+        return {"ref": self._document.replace(ref, candidate)}
 
     def _inspect(self, arguments: dict) -> dict:
         body = self._document.resolve(arguments.get("ref"))

@@ -20,6 +20,13 @@ class InvalidGeometry(ContractError):
     """Primitive dimensions or coordinates that cannot form a solid."""
 
 
+class InvalidTransform(ContractError):
+    """Affine matrix that this kernel cannot apply to a solid."""
+
+    def __init__(self, message: str = "transform is not a valid affine mapping"):
+        super().__init__("INVALID_TRANSFORM", message)
+
+
 class UnknownReference(ContractError):
     def __init__(self, message: str = "reference does not exist"):
         super().__init__("UNKNOWN_REFERENCE", message)

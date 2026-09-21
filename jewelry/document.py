@@ -21,6 +21,13 @@ class Document:
         self._revision += 1
         return ref
 
+    def replace(self, ref: object, body: Body) -> str:
+        if not isinstance(ref, str) or ref not in self._bodies:
+            raise UnknownReference()
+        self._bodies[ref] = body
+        self._revision += 1
+        return ref
+
     def resolve(self, ref: object) -> Body:
         if not isinstance(ref, str):
             raise UnknownReference()

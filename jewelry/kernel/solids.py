@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from jewelry.kernel.numeric import as_positive_dimension, as_size, as_vec3
+from jewelry.kernel.transform import AffineTransform
 
 
 def closed_solid_topology() -> dict:
@@ -32,8 +33,41 @@ class Body(ABC):
     def describe(self) -> dict:
         raise NotImplementedError
 
+    @abstractmethod
+    def transformed_bounds(self, transform: AffineTransform) -> list[list[float]]:
+        raise NotImplementedError
+
     def topology(self) -> dict:
         return closed_solid_topology()
+
+
+def _aabb_from_points(points: list[tuple[float, float, float]]) -> list[list[float]]:
+    return [
+        [min(point[i] for point in points) for i in range(3)],
+        [max(point[i] for point in points) for i in range(3)],
+    ]
+
+
+def _union_aabb(left: list[list[float]], right: list[list[float]]) -> list[list[float]]:
+    return [
+        [min(left[0][i], right[0][i]) for i in range(3)],
+        [max(left[1][i], right[1][i]) for i in range(3)],
+    ]
+
+
+def _disk_aabb(
+    transform: AffineTransform,
+    center: tuple[float, float, float],
+    radius: float,
+) -> list[list[float]]:
+    mapped = transform.transform_point(center)
+    u = transform.linear_map((radius, 0.0, 0.0))
+    v = transform.linear_map((0.0, radius, 0.0))
+    extents = (math.hypot(u[0], v[0]), math.hypot(u[1], v[1]), math.hypot(u[2], v[2]))
+    return [
+        [mapped[i] - extents[i] for i in range(3)],
+        [mapped[i] + extents[i] for i in range(3)],
+    ]
 
 
 class Primitive(Body):
@@ -76,6 +110,16 @@ class Box(Primitive):
             "origin": [self.origin[0], self.origin[1], self.origin[2]],
             "size": [self.size[0], self.size[1], self.size[2]],
         }
+
+    def transformed_bounds(self, transform: AffineTransform) -> list[list[float]]:
+        ox, oy, oz = self.origin
+        sx, sy, sz = self.size
+        return _aabb_from_points([
+            transform.transform_point((ox + dx, oy + dy, oz + dz))
+            for dx in (0.0, sx)
+            for dy in (0.0, sy)
+            for dz in (0.0, sz)
+        ])
 
 
 @dataclass(frozen=True)
@@ -121,6 +165,13 @@ class Cylinder(Primitive):
             "height": self.height,
         }
 
+    def transformed_bounds(self, transform: AffineTransform) -> list[list[float]]:
+        ox, oy, oz = self.origin
+        return _union_aabb(
+            _disk_aabb(transform, (ox, oy, oz), self.radius),
+            _disk_aabb(transform, (ox, oy, oz + self.height), self.radius),
+        )
+
 
 @dataclass(frozen=True)
 class Sphere(Primitive):
@@ -159,3 +210,47 @@ class Sphere(Primitive):
             "center": [self.center[0], self.center[1], self.center[2]],
             "radius": self.radius,
         }
+
+    def transformed_bounds(self, transform: AffineTransform) -> list[list[float]]:
+        center = transform.transform_point(self.center)
+        extents = tuple(self.radius * transform.linear_row_norm(axis) for axis in range(3))
+        return [
+            [center[i] - extents[i] for i in range(3)],
+            [center[i] + extents[i] for i in range(3)],
+        ]
+
+
+@dataclass(frozen=True)
+class TransformedBody(Body):
+    """Solid image of `base` under an orientation-preserving affine transform."""
+
+    base: Body
+    transform: AffineTransform
+
+    @classmethod
+    def apply(cls, body: Body, transform: AffineTransform) -> TransformedBody:
+        if isinstance(body, TransformedBody):
+            return cls(body.base, transform.compose(body.transform))
+        return cls(body, transform)
+
+    def volume(self) -> float:
+        return self.base.volume() * self.transform.volume_scale()
+
+    def bounds(self) -> list[list[float]]:
+        return self.base.transformed_bounds(self.transform)
+
+    def contains(self, point: tuple[float, float, float]) -> bool:
+        return self.base.contains(self.transform.inverse_transform_point(point))
+
+    def describe(self) -> dict:
+        return {
+            "kind": "transformed",
+            "base": self.base.describe(),
+            "matrix": list(self.transform.matrix),
+        }
+
+    def transformed_bounds(self, transform: AffineTransform) -> list[list[float]]:
+        return self.base.transformed_bounds(transform.compose(self.transform))
+
+    def topology(self) -> dict:
+        return self.base.topology()
