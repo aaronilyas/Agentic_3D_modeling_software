@@ -1,6 +1,8 @@
 from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import QMainWindow, QDockWidget, QMessageBox, QFileDialog
+from PySide6.QtWidgets import (
+    QApplication, QDockWidget, QFileDialog, QLabel, QMainWindow, QMessageBox, QTabWidget, QWidget,
+)
 
 from jewelry.gui.controller import Controller, _Job
 from jewelry.gui.agent_controller import AgentController
@@ -15,6 +17,10 @@ from jewelry.gui.viewport import Viewport
 class MainWindow(QMainWindow):
     def __init__(self, controller=None):
         super().__init__()
+        app = QApplication.instance()
+        if app is not None:
+            from jewelry.gui.main import apply_palette
+            apply_palette(app)
         self.setWindowTitle('Jewelry CAD')
         self.resize(1280, 900)
         self.setMinimumSize(960, 680)
@@ -31,16 +37,28 @@ class MainWindow(QMainWindow):
         self.validation_panel = ValidationPanel(self)
         self.tree_dock = self._dock('Model Tree', self.tree, Qt.DockWidgetArea.LeftDockWidgetArea)
         self.inspector_dock = self._dock('Inspector', self.inspector, Qt.DockWidgetArea.RightDockWidgetArea)
+        side_title = 'QDockWidget::title { background: #3a424c; padding: 4px 8px; text-align: left; }'
+        self.tree_dock.setStyleSheet(side_title)
+        self.inspector_dock.setStyleSheet(side_title)
         self.validation_dock = self._dock('Manufacturing Validation', self.validation_panel, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.agent_controller = AgentController(self.controller, self)
         self.agent_panel = AgentPanel(self.agent_controller, self)
         self.agent_dock = self._dock('Design Assistant', self.agent_panel, Qt.DockWidgetArea.BottomDockWidgetArea)
         self.tabifyDockWidget(self.validation_dock, self.agent_dock)
         self.agent_dock.raise_()
+        for dock in (self.validation_dock, self.agent_dock):
+            dock.topLevelChanged.connect(self._sync_bottom_titles)
+        self._sync_bottom_titles()
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.setTabPosition(Qt.DockWidgetArea.BottomDockWidgetArea, QTabWidget.TabPosition.North)
+        self.agent_panel.setMinimumHeight(132)
+        self.validation_panel.setMinimumHeight(140)
         self.actions = {}
         self._menus()
-        self.resizeDocks([self.tree_dock, self.inspector_dock], [180, 280], Qt.Orientation.Horizontal)
-        self.resizeDocks([self.validation_dock], [220], Qt.Orientation.Vertical)
+        self._appearance()
+        self.resizeDocks([self.tree_dock, self.inspector_dock], [200, 280], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.agent_dock], [176], Qt.Orientation.Vertical)
         self.controller.refreshed.connect(self._refresh)
         self.controller.selection_changed.connect(self._selection)
         self.controller.failed.connect(self._error)
@@ -52,8 +70,44 @@ class MainWindow(QMainWindow):
         self.inspector.modify_requested.connect(lambda: self.open_operation('modify_ring'))
         self.tree.ref_selected.connect(self.controller.select)
         self.viewport.ref_selected.connect(self.controller.select)
-        self.statusBar().showMessage('mm • Drag: orbit • Middle / Shift+drag: pan • Wheel: zoom • Right-click: select')
+        gesture = QLabel('Orbit · Pan · Zoom · Right-click select')
+        units = QLabel('mm')
+        self.statusBar().addPermanentWidget(gesture)
+        self.statusBar().addPermanentWidget(units)
+        self.statusBar().showMessage('Ready')
         self.controller.refresh()
+
+    def _appearance(self):
+        self.setStyleSheet("""
+            QMainWindow::separator { background: #1c222a; width: 4px; height: 4px; }
+            QTabBar::tab {
+                background: #2a3038;
+                color: #9aa3ad;
+                padding: 4px 10px;
+                border: none;
+            }
+            QTabBar::tab:selected { background: #3a424c; color: #e8eaed; }
+            QTabBar::tab:hover { color: #e8eaed; }
+            QTreeWidget { background: #252b33; border: none; outline: none; }
+            QTreeWidget::item { padding: 1px 4px; }
+            QTreeWidget::item:hover { background: #343c46; }
+            QTreeWidget::item:selected { background: #9a5824; color: #fff8f0; }
+            QTreeWidget::item:selected:hover { background: #b06a30; color: #fff8f0; }
+            QToolBar QToolButton { padding: 4px 8px; }
+            QToolBar QToolButton:disabled { color: #c5ced6; background: #2a3038; }
+        """)
+
+    def _sync_bottom_titles(self, *_args):
+        # Tabbed editor pages already show their name on the tab. A second title
+        # bar only returns when the dock is floated or untabbed.
+        for dock in (self.validation_dock, self.agent_dock):
+            tabbed = bool(self.tabifiedDockWidgets(dock)) and not dock.isFloating()
+            if tabbed and dock.titleBarWidget() is None:
+                hidden = QWidget(dock)
+                hidden.setFixedHeight(0)
+                dock.setTitleBarWidget(hidden)
+            elif not tabbed and dock.titleBarWidget() is not None:
+                dock.setTitleBarWidget(None)
 
     def _dock(self, title, widget, area):
         dock = QDockWidget(title, self)
@@ -96,8 +150,25 @@ class MainWindow(QMainWindow):
             view.addAction(dock.toggleViewAction())
         toolbar = self.addToolBar('Tools')
         toolbar.setObjectName('Tools')
-        for key in ('ring', 'modify_ring', 'fit', 'undo', 'redo', 'validate', 'export'):
-            toolbar.addAction(self.actions[key])
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        groups = (
+            (('ring', 'Create Ring', 'Create a ring from inner radius, outer radius, and width'),
+             ('modify_ring', 'Modify', 'Edit the selected plain ring')),
+            (('undo', 'Undo', 'Undo the last committed change'),
+             ('redo', 'Redo', 'Redo the last undone change')),
+            (('fit', 'Fit', 'Frame the model in the viewport'),),
+            (('validate', 'Validate', 'Run manufacturing validation on the document'),
+             ('export', 'Export', 'Export the selected object as STL')),
+        )
+        for index, group in enumerate(groups):
+            if index:
+                toolbar.addSeparator()
+            for key, label, tip in group:
+                action = self.actions[key]
+                action.setIconText(label)
+                action.setToolTip(tip)
+                toolbar.addAction(action)
 
     def open_operation(self, operation):
         if self.controller.busy:

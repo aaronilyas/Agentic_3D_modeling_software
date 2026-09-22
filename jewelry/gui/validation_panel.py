@@ -1,7 +1,7 @@
 """Presentation of backend manufacturing reports and supported profile settings."""
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QPushButton, QGroupBox, QFormLayout,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox, QFormLayout,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 from jewelry.gui.controller import DEFAULT_PROFILE
@@ -14,13 +14,19 @@ class ValidationPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setMinimumHeight(140)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+        header = QHBoxLayout()
+        header.setSpacing(8)
         self.status = QLabel('Not validated — run Validate Model before export.')
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        header.addWidget(self.status, 1)
         self.validate_button = QPushButton('Validate Model')
         self.validate_button.clicked.connect(self.validate_requested)
-        layout.addWidget(self.validate_button)
+        header.addWidget(self.validate_button, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(header)
         self.settings = QGroupBox('Advanced manufacturing profile')
         self.settings.setCheckable(True)
         self.settings.setChecked(False)
@@ -45,7 +51,8 @@ class ValidationPanel(QWidget):
         self.findings.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.findings.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.findings.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.findings)
+        self.findings.setMinimumHeight(72)
+        layout.addWidget(self.findings, 1)
         note = QLabel('Validation covers the whole document. Export STL saves the selected object. Measurements use the profile’s mm units unless the finding describes a count.')
         note.setWordWrap(True)
         layout.addWidget(note)

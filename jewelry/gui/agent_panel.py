@@ -15,7 +15,7 @@ class AgentPanel(QWidget):
         self.agent.addItem('Grok', 'grok')
         self.agent.addItem('Codex', 'codex')
         self.agent.setToolTip('Uses the selected CLI’s configured model and credentials')
-        self.status = QLabel('Ready • configured CLI required')
+        self.status = QLabel()
         self.status.setAccessibleName('Agent connection and activity status')
         header.addWidget(self.agent)
         header.addWidget(self.status, 1)
@@ -40,10 +40,15 @@ class AgentPanel(QWidget):
         self.prompt.returnPressed.connect(self.send)
         self.send_button.clicked.connect(self.send)
         self.prompt.textChanged.connect(self._update_send)
-        agent_controller.status.connect(self.status.setText)
+        agent_controller.status.connect(self._show_status)
         agent_controller.message.connect(self.append_message)
+        self._show_status('Ready • configured CLI required')
         agent_controller.controller.busy_changed.connect(self.set_busy)
         self._update_send()
+
+    def _show_status(self, text):
+        self.status.setText(text)
+        self.status.setAccessibleDescription(text)
 
     def append_message(self, role, text):
         self.transcript.appendPlainText(f'{role}\n{text}\n')

@@ -177,6 +177,115 @@ class GuiTests(unittest.TestCase):
         self.assertNotEqual(plotter.camera.distance, before)
         self.assertEqual(self.controller.request('snapshot')[1], snapshot)
 
+    def test_orientation_gizmo_logical_size_handedness_and_resize(self):
+        viewport = self.window.viewport
+        plotter = viewport.plotter
+        widget = viewport.orientation_widget
+        rep = widget.GetRepresentation()
+        self.qt.processEvents()
+        plotter.render()
+
+        def rgb(getter):
+            return tuple(float(channel) for channel in getter())
+
+        np.testing.assert_allclose(rgb(rep.GetXAxisColor), (1, 0, 0), atol=1e-6)
+        np.testing.assert_allclose(rgb(rep.GetYAxisColor), (0, 1, 0), atol=1e-6)
+        np.testing.assert_allclose(rgb(rep.GetZAxisColor), (0, 0, 1), atol=1e-6)
+        self.assertEqual(rep.GetXPlusLabelText(), 'X')
+        self.assertEqual(rep.GetYPlusLabelText(), 'Y')
+        self.assertEqual(rep.GetZPlusLabelText(), 'Z')
+        self.assertEqual(rep.GetXMinusLabelText(), '-X')
+        self.assertEqual(rep.GetYMinusLabelText(), '-Y')
+        self.assertEqual(rep.GetZMinusLabelText(), '-Z')
+        self.assertEqual(int(rep.GetAnchorPosition()), 0)
+        self.assertFalse(widget.GetShouldResetCamera())
+        self.assertFalse(widget.GetAnimate())
+        self.assertIs(rep.GetRenderer(), widget.GetDefaultRenderer())
+
+        def expected_metrics():
+            dpr = float(plotter.devicePixelRatioF())
+            size = round(96 * dpr)
+            pad = round(16 * dpr)
+            return (size, size), (pad, pad)
+
+        def assert_metrics():
+            size, pad = expected_metrics()
+            self.assertEqual(tuple(int(value) for value in rep.GetSize()), size)
+            self.assertEqual(tuple(int(value) for value in rep.GetPadding()), pad)
+            plotter.render()
+            actual = plotter.render_window.GetActualSize()
+            self.assertGreater(int(actual[0]), 0)
+            self.assertGreater(int(actual[1]), 0)
+            xmin, ymin, xmax, ymax = widget.GetDefaultRenderer().GetViewport()
+            self.assertAlmostEqual((xmax - xmin) * actual[0], size[0], delta=1.5)
+            self.assertAlmostEqual((ymax - ymin) * actual[1], size[1], delta=1.5)
+            self.assertAlmostEqual(xmin * actual[0], pad[0], delta=1.5)
+            self.assertAlmostEqual(ymin * actual[1], pad[1], delta=1.5)
+
+        assert_metrics()
+        ref = self.ring()
+        self.assertIn(ref, viewport.actors_by_ref)
+        self.assertNotIn(widget, viewport.actors_by_ref.values())
+        self.assertNotIn(rep, viewport.actors_by_ref.values())
+        bounds = tuple(viewport.actors_by_ref[ref].bounds)
+        distance = plotter.camera.distance
+        plotter.camera.position = (1000, 1000, 1000)
+        self.assertGreater(plotter.camera.distance, distance + 100)
+        assert_metrics()
+        viewport.fit_model()
+        assert_metrics()
+        viewport.reset_camera()
+        assert_metrics()
+        self.assertTrue(self.controller.mutate('modify_ring', ref=ref, outer_radius=30))
+        grown = tuple(viewport.actors_by_ref[ref].bounds)
+        self.assertGreater(grown[1], bounds[1] + 10)
+        assert_metrics()
+        self.controller.refresh()
+        self.assertIs(viewport.orientation_widget, widget)
+        self.assertIs(viewport.orientation_widget.GetRepresentation(), rep)
+        assert_metrics()
+
+        self.window.resize(1100, 800)
+        self.qt.processEvents()
+        plotter.render()
+        first_window = tuple(int(value) for value in plotter.render_window.GetSize())
+        assert_metrics()
+        self.window.resize(1600, 1000)
+        self.qt.processEvents()
+        plotter.render()
+        second_window = tuple(int(value) for value in plotter.render_window.GetSize())
+        self.assertNotEqual(first_window, second_window)
+        assert_metrics()
+
+        def rotation(matrix):
+            return np.array([[matrix.GetElement(row, col) for col in range(3)] for row in range(3)], dtype=float)
+
+        def assert_matches_camera():
+            plotter.render()
+            camera = plotter.camera
+            view = rotation(camera.GetViewTransformMatrix())
+            orient = rotation(rep.GetTransform().GetMatrix())
+            self.assertGreater(np.linalg.det(view), 0.5)
+            self.assertGreater(np.linalg.det(orient), 0.5)
+            np.testing.assert_allclose(orient, view, atol=1e-4)
+            mirrored = view.copy()
+            mirrored[:, 0] *= -1
+            self.assertFalse(np.allclose(orient, mirrored, atol=1e-3))
+            if not np.allclose(view, view.T, atol=1e-3):
+                self.assertFalse(np.allclose(orient, view.T, atol=1e-3))
+
+        viewport.reset_camera()
+        assert_matches_camera()
+        plotter.camera.focal_point = (0, 0, 0)
+        plotter.camera.position = (0, -100, 0)
+        plotter.camera.up = (0, 0, 1)
+        plotter.render()
+        direction = np.array(plotter.camera.focal_point, dtype=float) - np.array(plotter.camera.position, dtype=float)
+        direction /= np.linalg.norm(direction)
+        np.testing.assert_allclose(direction, (0, 1, 0), atol=1e-6)
+        np.testing.assert_allclose(plotter.camera.up, (0, 0, 1), atol=1e-6)
+        assert_matches_camera()
+
     def test_create_form_validation_cancel_and_structured_backend_failure(self):
         self.window.actions['ring'].trigger()
         dialog = self.window.operation_dialog

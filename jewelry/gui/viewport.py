@@ -1,9 +1,18 @@
 """VTK actors are disposable render state, never CAD geometry."""
 import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEvent, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 import pyvista as pv
 from pyvistaqt import QtInteractor
+from vtkmodules.vtkInteractionWidgets import (
+    vtkCameraOrientationRepresentation,
+    vtkCameraOrientationWidget,
+)
+from vtkmodules.vtkRenderingCore import vtkActor, vtkPropCollection
+
+# Logical pixels. SquareResize divides by the render window's device-pixel size.
+_LOGICAL_SIZE_PX = 96
+_LOGICAL_PAD_PX = 16
 
 
 class Viewport(QWidget):
@@ -17,14 +26,80 @@ class Viewport(QWidget):
         layout.addWidget(self.plotter)
         self.actors_by_ref = {}
         self.edges = False
+        self.orientation_widget = None
         self.plotter.set_background('#202832')
         self.plotter.enable_trackball_style()
-        self.plotter.add_axes()
         self.plotter.enable_mesh_picking(
             callback=self._picked, use_actor=True, show=False,
             show_message=False, left_clicking=False,
         )
+        self.orientation_widget = self._create_orientation_widget()
         self.reset_camera()
+
+    def _create_orientation_widget(self):
+        widget = vtkCameraOrientationWidget()
+        widget.SetParentRenderer(self.plotter.renderer)
+        widget.SetInteractor(self.plotter.iren.interactor)
+        representation = vtkCameraOrientationRepresentation()
+        widget.SetRepresentation(representation)
+        representation.SetShaftResolution(16)
+        representation.SetNormalizedHandleDia(0.46)
+        # Constructor bakes shaft radius 0.02 and never copies ShaftResolution
+        # onto the tube, which is about one pixel inside a 96px gizmo.
+        self._set_shaft_radius(representation, 0.09)
+        container = representation.GetContainerProperty()
+        container.SetColor(0.10, 0.11, 0.13)
+        container.SetOpacity(0.32)
+        overlay = widget.GetDefaultRenderer()
+        overlay.SetPreserveColorBuffer(True)
+        overlay.SetBackgroundAlpha(0.0)
+        self._apply_orientation_metrics(widget)
+        widget.On()
+        return widget
+
+    def _set_shaft_radius(self, representation, radius):
+        props = vtkPropCollection()
+        representation.GetActors(props)
+        props.InitTraversal()
+        sides = max(int(representation.GetShaftResolution()), 3)
+        prop = props.GetNextProp()
+        while prop is not None:
+            actor = vtkActor.SafeDownCast(prop)
+            mapper = actor.GetMapper() if actor is not None else None
+            algorithm = mapper.GetInputAlgorithm() if mapper is not None else None
+            if algorithm is not None and algorithm.IsA('vtkTubeFilter'):
+                algorithm.SetRadius(radius)
+                algorithm.SetNumberOfSides(sides)
+            prop = props.GetNextProp()
+
+    def _apply_orientation_metrics(self, widget=None):
+        widget = self.orientation_widget if widget is None else widget
+        plotter = getattr(self, 'plotter', None)
+        if widget is None or plotter is None or getattr(plotter, '_closed', False):
+            return
+        representation = widget.GetRepresentation()
+        if representation is None:
+            return
+        dpr = float(plotter.devicePixelRatioF())
+        size = round(_LOGICAL_SIZE_PX * dpr)
+        pad = round(_LOGICAL_PAD_PX * dpr)
+        representation.SetSize(int(size), int(size))
+        representation.SetPadding(int(pad), int(pad))
+        representation.AnchorToLowerLeft()
+        representation.SetXAxisColor(1.0, 0.0, 0.0)
+        representation.SetYAxisColor(0.0, 1.0, 0.0)
+        representation.SetZAxisColor(0.0, 0.0, 1.0)
+        widget.SetAnimate(False)
+        widget.SetShouldResetCamera(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_orientation_metrics()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            self._apply_orientation_metrics()
 
     def synchronize(self, meshes):
         was_empty = not self.actors_by_ref
@@ -68,4 +143,18 @@ class Viewport(QWidget):
         self.fit_model()
 
     def shutdown(self):
-        self.plotter.close()
+        self._release_orientation_widget()
+        plotter = getattr(self, 'plotter', None)
+        if plotter is not None and not getattr(plotter, '_closed', False):
+            plotter.close()
+
+    def _release_orientation_widget(self):
+        widget = getattr(self, 'orientation_widget', None)
+        if widget is None:
+            return
+        if widget.GetEnabled():
+            widget.Off()
+        if widget.GetParentRenderer() is not None:
+            widget.SetParentRenderer(None)
+        if widget.GetInteractor() is not None:
+            widget.SetInteractor(None)
