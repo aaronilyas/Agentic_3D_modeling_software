@@ -19,6 +19,9 @@ LAYERS = {
     'harness': ['tests.test_harness'],
     'fast': ['tests.test_kernel', 'tests.test_validator', 'tests.test_application'],
     'integration': ['tests.test_export', 'tests.test_mcp'],
+    'generic': [
+        'tests.test_cad_model', 'tests.test_cad_export', 'tests.test_cad_assets', 'tests.test_cad_agent',
+    ],
     'mcp': ['tests.test_mcp'],
     'acp': ['tests.test_acp'],
     'e2e': ['tests.test_e2e'],
@@ -30,7 +33,7 @@ def main():
     parser.add_argument('layer', choices=[*LAYERS, 'local', 'all'], nargs='?', default='fast')
     options = parser.parse_args()
     layers = {'local': ['harness', 'fast', 'integration'],
-              'all': ['harness', 'fast', 'integration', 'acp', 'e2e']}.get(options.layer, [options.layer])
+              'all': ['harness', 'fast', 'integration', 'generic', 'acp', 'e2e']}.get(options.layer, [options.layer])
     suite = unittest.defaultTestLoader.loadTestsFromNames(
         [module for layer in layers for module in LAYERS[layer]])
     result = unittest.TextTestRunner(verbosity=2, resultclass=ContractResult).run(suite)

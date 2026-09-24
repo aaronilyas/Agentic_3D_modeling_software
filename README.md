@@ -1,217 +1,163 @@
-# Agentic jewelry CAD
+# Agentic CAD
 
-Python jewelry CAD application and the MVP contract suite. Kernel groups
-K01–K08, document transactions A01–A04, manufacturing validation V01–V07,
-tessellation/export X01–X04, MCP M01–M04, ACP C01–C04, and E2E E01–E03 are
-implemented. Requires Python 3.10 or newer.
+Agent-first parametric CAD. The editable model is a feature graph plus exact
+B-rep. Meshes are derived for display, renders, and mesh export. STEP comes
+from the B-rep.
+
+Millimetres are the internal unit. Axes are right-handed and Z is up. The
+application document is the only geometry authority: the desktop, MCP server,
+and refinement loop all call that document. A successful tool call is not, by
+itself, completion of a request.
+
+The jewelry package remains as a domain and compatibility layer. Its analytic
+kernel, manufacturing checks, MCP contract, and desktop are unchanged. The
+generic `cad` package does not import it.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the feature graph, export
+gates, reference images, and the refinement loop.
 
 ## Setup
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e .
-export JEWELRY_TEST_ADAPTER=jewelry.adapter:create_application
-```
-
-Install the project into the virtualenv you use to run it. `import jewelry`
-does not search for a `.venv` or modify `sys.path`. Runtime dependencies are
-`numpy>=1.26,<3` and `manifold3d>=3.0,<4`.
-
-`JEWELRY_TEST_ADAPTER=jewelry.adapter:create_application` selects the in-repo
-factory. The factory returns an object with `execute(operation, arguments)`
-and `close()`.
-
-## Deterministic tests
-
-From the repository root, with the virtualenv's interpreter:
-
-```bash
-.venv/bin/python -m tests.run harness      # test infrastructure
-.venv/bin/python -m tests.run fast         # K01–K08, V01–V07, A01–A04
-.venv/bin/python -m tests.run integration  # X01–X04, M01–M04
-.venv/bin/python -m tests.run local        # harness + fast + integration
-```
-
-The default `python -m tests.run` runs only fast tests. These layers do not
-start Grok or Codex. GitHub Actions runs harness, fast, and integration.
-
-## ACP and end-to-end tests
-
-ACP and E2E are explicit opt-in. They are not part of baseline CI.
-
-```bash
-.venv/bin/python -m tests.run acp   # C01–C04, both CLI adapters
-.venv/bin/python -m tests.run e2e   # E01–E03
-.venv/bin/python -m tests.run all   # every layer, including ACP and E2E
-```
-
-E2E uses MCP on the live application and does not need a model CLI. ACP spawns
-real `grok` and `codex` processes against a local HTTP model. It does not call
-paid inference.
-
-Executable lookup uses `PATH`, unless an override is set:
-
-```text
-JEWELRY_GROK        grok executable
-JEWELRY_CODEX       codex executable
-JEWELRY_NPX         npx executable
-JEWELRY_CODEX_ACP   npm package spec (default @agentclientprotocol/codex-acp@1.12.0)
-```
-
-The Codex adapter runs `npx -y` with that package spec. This tree was exercised
-with grok 1.0.40 and codex-cli 0.154.0. Those CLI versions are not pinned;
-override the executables when you need a specific build. A missing or
-non-executable override raises `MISSING_CAPABILITY` and does not fall back to
-`PATH`.
-
-## Contract
-
-[tests/CONTRACT.md](tests/CONTRACT.md) is the adapter boundary. References are
-opaque. Assertions concern observable behavior. The adapter must not calculate
-fixture answers, fabricate validation, or mock successful geometry.
-
-MCP is stdlib NDJSON JSON-RPC (2025-06-18) on the same `Application` as
-`execute()`. ACP launches `grok agent stdio` and the pinned Codex ACP package
-with an isolated HOME and a local HTTP model at `127.0.0.1`.
-
-All geometry uses millimetres and mm³. Kernel numeric tolerance, geometry
-comparison tolerances, configured manufacturing limits, tessellation chord
-error, and export measurement tolerances stay separate. STL is unitless; its
-coordinates are millimetres.
-
-| Layer | Specification groups |
-| --- | --- |
-| Kernel | K01–K08 |
-| Manufacturing validator | V01–V07 |
-| Tessellation / export | X01–X04 |
-| Application | A01–A04 |
-| MCP | M01–M04 |
-| ACP (one contract, Codex and Grok) | C01–C04 |
-| End to end | E01–E03 |
-
-## Desktop GUI
-
-Install the optional desktop dependencies and launch on a graphical desktop:
-
-```bash
 .venv/bin/pip install -e '.[gui]'
-.venv/bin/python -m jewelry.gui
-# Alternatively: .venv/bin/jewelry-cad
 ```
 
-The PySide6 window embeds PyVistaQt/VTK, with model-tree, inspector, and
-manufacturing-validation docks. **Modeling → Create Ring** opens numeric controls
-for inner radius, outer radius, and width, in mm. Select a plain ring and use
-**Modify Ring** in the toolbar or inspector to edit those dimensions. Drag to orbit, middle-drag
-(or Shift+left-drag) to pan, and scroll to zoom. Right-click a body to select it,
-or select it in the tree. View → Fit model (`F`) frames all bodies; Reset camera
-restores the isometric orientation. Show mesh edges overlays triangle edges.
+Runtime dependencies are `numpy`, `manifold3d` (jewelry tessellation), and
+`build123d` (OpenCascade). The `gui` extra adds PySide6 and PyVista. Python
+3.10 or newer is required; the OpenCascade wheels used here were exercised on
+3.14.
 
-File → New discards the current in-memory document and history, closes its
-Application, and creates one empty replacement. There is no persistence yet.
-Undo, Redo, and Delete selected operate on backend history. The controller calls
-only `Application.execute` for geometry and diagnostic operations; snapshots,
-tree items, selection, and VTK meshes are disposable presentation state.
-CAD work, inspection, tessellation, validation, and export run in a serialized
-worker; Qt/VTK rendering stays on the main thread. Document actions are disabled
-while work is running. Preview/export chord tolerance is 0.02 mm; dimensions and
-inspection volumes are shown in mm and mm³. Camera movement never enters history.
+## Generic model
 
-The Modeling menu also provides **Cut Through-Hole**, **Cut Stone Seat / Recess**,
-**Add Setting**, and **Repeat Prongs**. Forms use document X/Y coordinates and Z
-heights; cutters and additions are cylindrical and aligned with Z. Defaults work
-with the initial ring: add setting → cut recess → repeat prongs. Adjust placement
-for other dimensions. After adding/cutting features, the combined solid no longer
-supports ring dimension editing; undo those features to edit the plain ring.
-Use Delete to remove a selection, Ctrl/Cmd+Z to undo, and Ctrl/Cmd+Shift+Z to redo.
+```python
+from cad.adapter import create_application
 
-**Manufacturing → Validate Model** shows the real backend's readiness and findings,
-including severity, code, description, and any measured/required values. The
-advanced profile starts with `mvp-single-piece`: minimum wall 1 mm, minimum prong
-0.8 mm, maximum components 1. Validation applies to the whole document. Editing,
-undo, or redo makes the report stale; changing the profile requires new validation.
-
-**Manufacturing → Export STL** opens a native save chooser and exports the selected
-object in mm. Validate first. The backend rejects stale reports, rechecks current
-geometry under the report rules, and checks the export mesh using its existing
-structural diagnostics. Publication is atomic: failures preserve an existing file
-and clean up temporary output. Errors show the backend code and reason; success
-shows the final path in the status bar. STL itself has no unit metadata.
-
-Run desktop integration tests separately (requires the GUI extra and a working
-Qt/OpenGL display; a configured Xvfb display can also be used):
-
-```bash
-.venv/bin/python -m unittest tests.test_gui -v
+app = create_application()
+box = app.execute("create_primitive", {
+    "kind": "box", "size": [60, 40, 4], "origin": [0, 0, 0], "name": "plate",
+})
 ```
 
-The tests use real Qt widgets, backend geometry, and VTK actors/picking;
-they check camera interaction without pixel comparisons. Backend-only installs
-and the existing contract test layers do not import the GUI.
+`execute` returns `{ok: true, value}` or `{ok: false, error: {code, message}}`.
+Create operations return a stable `ref` and `feature_id`. `edit_feature` changes
+parameters and rebuilds dependents. A failed edit leaves the revision unchanged.
+`undo` and `redo` restore earlier commits. References are not reused.
 
-The GUI uses the existing validator's semantics: analytic document validation
-checks supported wall/prong dimensions and components; export additionally checks
-mesh structure. It does not infer printability from the preview. There is no
-generic feature-parameter editor or document persistence yet.
+Modeling operations include primitives, sketches, extrude, revolve, sweep, loft,
+boolean, transform, fillet, chamfer, shell, hole, mirror, and linear and
+circular patterns. `query_faces` and `query_edges` return semantic ids for the
+current revision. Passing those ids with an older `selection_revision` fails
+with `STALE_SELECTION`.
 
-## Design Assistant
+`refine` runs a bounded loop: inspect the document and reference images, plan,
+execute, measure, render, and repeat until measurable goals match, the planner
+stops, the request is impossible, the loop is cancelled, or the iteration cap
+is hit. The built-in planner can correct `box sx sy sz` and build a mounting
+bracket (plates, union, patterned holes, a diameter edit, and a fillet).
+Cancellation leaves already committed operations undoable.
 
-The bottom **Design Assistant** dock operates on the same live document as the
-modeling forms. Choose **Grok** (the explicit default) or **Codex**, enter a request,
-and press **Send** or Enter. For example, after creating and selecting a ring:
-“Change the selected ring’s outer radius to 10 mm, keeping its other dimensions.”
-You can then ask for a setting or validation, or continue with the direct controls.
+## Reference images
 
-Install/configure your chosen external CLI and its model credentials before
-launching the desktop. The panel uses that CLI’s existing environment and user
-configuration; model inference may use the configured provider. Codex also needs
-Node/npm’s `npx`; its ACP bridge is downloaded/cached on first use. The executable
-overrides listed above (`JEWELRY_GROK`, `JEWELRY_CODEX`, `JEWELRY_NPX`, and
-`JEWELRY_CODEX_ACP`) apply to the panel too. Set executable overrides to executable
-file paths. No CLI is needed for direct modeling, validation, or export.
+`add_reference` copies a PNG or JPEG into the document with a role (`front`,
+`side`, `top`, `perspective`, `detail`, `inspiration`, or `other`), label,
+notes, pixel size, and SHA-256 checksum. `set_calibration` stores two pixel
+points and their real millimetre distance. `estimate_length` uses that scale.
+Without calibration the estimate is `uncalibrated`: one photograph does not
+establish depth or absolute scale. Images are saved in the project file, not
+only as chat attachments.
 
-The panel never substitutes a mock response when a CLI is absent. Missing
-executables produce **MISSING_CAPABILITY** with the relevant override. Startup,
-authentication/connection, MCP discovery, and ACP protocol errors appear in the
-transcript. Configure the CLI before launch, or correct the environment and
-relaunch. No terminal interaction is required during a configured CAD session.
-An unavailable client-side filesystem/terminal capability is declined; this
-client supports CAD through Jewelry MCP. Existing CLI approval policies still
-apply. Do not rely on this desktop as a sandbox for externally configured CLIs.
+Headless `render_views` returns PNG orthographic views (`isometric`, `front`,
+`rear`, `left`, `right`, `top`, `bottom`) and silhouette metrics. Front looks
+along +Y, with +X to the right and +Z up. Those images supplement exact
+volume and topology checks.
 
-**CAD result** and **CAD error** entries are based on structured results from the
-live MCP server. **Assistant (agent text)** is the model’s response, not proof of
-an operation. Manufacturing findings appear in the validation dock. Agent edits
-make older validation reports visibly stale, just like manual edits. Cancel stops
-the session; already committed operations remain in history and can be undone.
+## Projects and export
 
-Only one direct or agent operation runs at a time. Model snapshots, tessellation,
-selection/inspection, and validation status refresh after each agent turn,
-including failed turns. ACP sessions are reused for the selected agent, replaced
-on agent changes, and closed on File → New or application exit. Startup, prompts,
-CAD work, and process teardown run outside the Qt event loop. The working directory
-is the absolute launch directory. The application has one authoritative document;
-MCP never launches a second CAD backend.
+`save_project` writes a versioned `.cadproj` zip (`format_version` 1) containing
+the feature graph, names, settings, reference files, and B-rep cache bytes.
+`open_project` replays the features. An unknown format version is rejected.
+Save does not modify the document. Open can be undone.
 
-A complete first session: launch → Create Ring → orbit/right-click to inspect →
-request an assistant edit → Undo/Redo → Validate Model → Export STL. These steps
-are all available inside the desktop. There is still no document save/reopen.
+| Format | Source | Units | Default gate |
+| --- | --- | --- | --- |
+| STEP | exact B-rep | millimetres | valid solid |
+| GLB | mesh | metres, converted from millimetres | valid solid |
+| STL | mesh | millimetres; STL has no unit field | current manufacturing report |
+| OBJ | mesh | millimetres | valid solid |
+| BLEND | headless Blender imports a generated glTF | metres in that glTF | valid solid, Blender on `PATH` |
 
-Run all GUI tests, including the real Grok/Codex ACP path with deterministic local
-model inference (no paid inference):
+Publication writes a temporary file and replaces the destination atomically.
+A failed export keeps the previous file and does not change the model.
+`validate` is read-only. Profiles are `geometry`, `fdm`, `sla`, `cnc`, and
+`casting`. Jewelry wall and prong rules stay on the jewelry validator.
+
+## Desktop
 
 ```bash
-.venv/bin/python -m unittest tests.test_gui tests.test_gui_agent -v
-# On a headless Linux test machine with Xvfb installed:
+.venv/bin/agentic-cad
+# or: .venv/bin/python -m cad.gui
+```
+
+The window is agent-first: viewport, model tree, inspector, reference images
+(including drag and drop), validation, and a refinement panel. File commands
+cover new, open, save, and STEP, GLB, and STL export. STL export uses
+manufacturing mode and requires a ready validation report for the current
+revision. Cancel asks the refinement loop to stop between iterations.
+
+The jewelry desktop is still available:
+
+```bash
+.venv/bin/jewelry-cad
+# or: .venv/bin/python -m jewelry.gui
+```
+
+That window keeps direct ring, setting, recess, and prong controls for the
+analytic document, plus its existing Design Assistant. Those dialogs are the
+jewelry compatibility surface.
+
+## Tests
+
+Generic CAD:
+
+```bash
+.venv/bin/python -m tests.run generic
+```
+
+Jewelry contract, with the analytic adapter:
+
+```bash
+export JEWELRY_TEST_ADAPTER=jewelry.adapter:create_application
+.venv/bin/python -m tests.run local
+```
+
+`local` is harness, fast, and integration. It does not start Grok or Codex.
+ACP and end-to-end jewelry tests stay opt-in (`tests.run acp`, `tests.run e2e`).
+GitHub Actions runs the jewelry harness, fast, and integration layers, then
+`tests.run generic`.
+
+Offscreen widget coverage, without an OpenGL viewport:
+
+```bash
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest tests.test_cad_gui -v
+```
+
+Jewelry GUI tests need a display or Xvfb:
+
+```bash
 xvfb-run -a .venv/bin/python -m unittest tests.test_gui tests.test_gui_agent -v
 ```
 
-`QT_QPA_PLATFORM=offscreen` can check widgets and actor data, but may not provide
-an OpenGL framebuffer; use a desktop or Xvfb for rendered viewport verification.
+[tests/CONTRACT.md](tests/CONTRACT.md) remains the jewelry adapter contract.
+Importing the jewelry test modules does not launch a CLI.
 
-For Codex, the desktop defaults the bridge’s `INITIAL_AGENT_MODE` to `read-only`
-(the bridge names this “Ask for approval”). Jewelry MCP permission requests are
-approved by the client; unrelated requests are declined. An explicitly configured
-`INITIAL_AGENT_MODE` remains respected. This avoids the bridge’s default automatic
-review mode, which can require a separate reviewer model. Existing `CODEX_HOME`,
-`GROK_HOME`, model-provider settings, and authentication remain the CLI’s own.
+## MCP
+
+Generic tools are served from the live application over MCP `2025-06-18`.
+`app.open_mcp()` returns the NDJSON transport. Tool schemas are typed.
+Lengths in arguments are millimetres except where an export format states
+otherwise. `instructions` on initialize restates units, axes, revision-bound
+selections, and that prose is not geometry.
+
+The jewelry MCP server is separate and still exposes the jewelry contract,
+including `create_ring`.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 
+from jewelry import domain as jewelry_domain
 from jewelry.document import Document
 from jewelry.errors import ContractError, UnknownReference
 from jewelry.export import export_body, export_mesh
@@ -209,7 +210,8 @@ class Application:
         return self._insert("boolean", body)
 
     def _create_ring(self, arguments: dict) -> dict:
-        body = self._kernel.create_ring(
+        body = jewelry_domain.create_ring(
+            self._kernel,
             arguments.get("inner_radius"),
             arguments.get("outer_radius"),
             arguments.get("width"),
@@ -221,55 +223,42 @@ class Application:
             raise UnknownReference("modify_ring requires a target reference")
         ref = arguments.get("ref")
         body = self._document.resolve(ref)
-        candidate = self._kernel.modify_ring(body, arguments)
+        candidate = jewelry_domain.modify_ring(self._kernel, body, arguments)
         return self._replace("modify_ring", ref, candidate)
 
     def _cut_through_hole(self, arguments: dict) -> dict:
         ref = arguments.get("ref")
         body = self._document.resolve(ref)
-        candidate = self._kernel.cut_through_hole(
-            body,
-            arguments.get("center"),
-            arguments.get("radius"),
+        candidate = jewelry_domain.cut_through_hole(
+            self._kernel, body, arguments.get("center"), arguments.get("radius"),
         )
         return self._replace("cut_through_hole", ref, candidate)
 
     def _cut_recess(self, arguments: dict) -> dict:
         ref = arguments.get("ref")
         body = self._document.resolve(ref)
-        candidate = self._kernel.cut_recess(
-            body,
-            arguments.get("center"),
-            arguments.get("radius"),
-            arguments.get("top_z"),
-            arguments.get("depth"),
+        candidate = jewelry_domain.cut_recess(
+            self._kernel, body, arguments.get("center"), arguments.get("radius"),
+            arguments.get("top_z"), arguments.get("depth"),
         )
         return self._replace("cut_recess", ref, candidate)
 
     def _add_setting(self, arguments: dict) -> dict:
         ref = arguments.get("ref")
         body = self._document.resolve(ref)
-        candidate = self._kernel.add_setting(
-            body,
-            arguments.get("center"),
-            arguments.get("radius"),
-            arguments.get("base_z"),
-            arguments.get("height"),
+        candidate = jewelry_domain.add_setting(
+            self._kernel, body, arguments.get("center"), arguments.get("radius"),
+            arguments.get("base_z"), arguments.get("height"),
         )
         return self._replace("add_setting", ref, candidate)
 
     def _repeat_prongs(self, arguments: dict) -> dict:
         ref = arguments.get("ref")
         body = self._document.resolve(ref)
-        candidate = self._kernel.repeat_prongs(
-            body,
-            arguments.get("center"),
-            arguments.get("orbit_radius"),
-            arguments.get("diameter"),
-            arguments.get("base_z"),
-            arguments.get("height"),
-            arguments.get("count"),
-            arguments.get("start_angle_degrees"),
+        candidate = jewelry_domain.repeat_prongs(
+            self._kernel, body, arguments.get("center"), arguments.get("orbit_radius"),
+            arguments.get("diameter"), arguments.get("base_z"), arguments.get("height"),
+            arguments.get("count"), arguments.get("start_angle_degrees"),
         )
         return self._replace("repeat_prongs", ref, candidate)
 

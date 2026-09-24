@@ -26,3 +26,5 @@ jobs:
         env:
           JEWELRY_TEST_ADAPTER: jewelry.adapter:create_application
         run: python -m tests.run integration
+      - name: Generic CAD
+        run: python -m tests.run generic
