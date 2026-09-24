@@ -1,6 +1,7 @@
 """Non-mutating geometry and manufacturing checks.
 
-Manufacturing profiles are generic process presets. Findings never change the document.
+Manufacturing profiles are lightweight size/component heuristics, not process
+simulation or a guarantee of manufacturability. Findings never change the document.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def resolve_profile(profile: object) -> dict:
 def validate_shape(shape, backend, rules: dict, *, label: str) -> list[dict]:
     findings = []
     topology = backend.topology(shape)
-    volume = float(shape.volume or 0.0)
+    volume = float(backend.measure(shape)["volume"])
     if not topology["valid"]:
         findings.append(_finding("INVALID_SHAPE", f"{label} is not a valid B-rep", "error"))
     if volume <= 1e-9:
@@ -90,24 +91,12 @@ def validate_shape(shape, backend, rules: dict, *, label: str) -> list[dict]:
     return findings
 
 
-def stale_selection_finding(selection: dict | None, revision: int) -> dict | None:
-    if not selection:
-        return None
-    if selection.get("revision") == revision:
-        return None
-    return _finding(
-        "STALE_SELECTION",
-        "a pinned topology selection is from revision "
-        f"{selection.get('revision')} and the document is at revision {revision}",
-        "warning",
-    )
-
-
 def report(revision: int, rules: dict, findings: list[dict], scope: str) -> dict:
     errors = [item for item in findings if item.get("severity") == "error"]
     return {
         "revision": int(revision),
         "scope": scope,
+        "limitations": "Size and component heuristics only; not complete manufacturability analysis.",
         "rules": rules,
         "ready": not errors,
         "geometry_ready": not any(item["code"] in {

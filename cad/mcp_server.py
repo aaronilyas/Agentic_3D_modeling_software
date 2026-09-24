@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import secrets
 import socket
@@ -19,12 +20,14 @@ from cad.jsonrpc import (
     parse_line,
     success,
 )
+from cad.content import split_images
 from cad.tools import TOOLS
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "cad"
 SERVER_VERSION = "1"
-MAX_LINE = 32 * 1024 * 1024
+# A 30 MiB reference expands to 40 MiB in an MCP image/resource block.
+MAX_LINE = 64 * 1024 * 1024
 AUTH_TIMEOUT = 5.0
 REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 
@@ -185,7 +188,11 @@ class McpEndpoint:
                 if reply is None:
                     continue
                 try:
-                    transport.send_line(dumps(reply))
+                    encoded = dumps(reply)
+                    if len(encoded.encode("utf-8")) + 1 > MAX_LINE:
+                        encoded = dumps(error(reply.get("id"), INTERNAL_ERROR,
+                                              "MCP response exceeds transport limit; request less content"))
+                    transport.send_line(encoded)
                 except (ConnectionError, OSError):
                     return
         finally:
@@ -224,11 +231,11 @@ class McpSession:
                 raise _RpcError(INVALID_PARAMS, "initialize params must be an object")
             return {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": (
                     "Units are millimetres. Axes are right-handed, Z up. "
-                    "Body references and topology ids are valid only for the revision that produced them. "
+                    "Body references are stable. Topology ids require the revision that produced them. "
                     "ok=false is a failed tool call. A successful tool call is not completion of the user request. "
                     "Geometry comes from the live document, not from assistant prose."
                 ),
@@ -251,7 +258,19 @@ class McpSession:
         if method == "tools/call":
             return self._call(params)
         if method == "resources/list":
-            return {"resources": []}
+            return {"resources": [
+                {"uri": image.uri, "name": image.metadata["label"] or image.metadata["id"],
+                 "mimeType": image.media_type}
+                for image in self.endpoint.application.reference_resources()
+            ]}
+        if method == "resources/read":
+            if not isinstance(params, dict):
+                raise _RpcError(INVALID_PARAMS, "resource params must be an object")
+            for image in self.endpoint.application.reference_resources():
+                if image.uri == params.get("uri"):
+                    return {"contents": [{"uri": image.uri, "mimeType": image.media_type,
+                                          "blob": base64.b64encode(image.data).decode("ascii")}]}
+            raise _RpcError(INVALID_PARAMS, "reference resource does not exist")
         if method == "resources/templates/list":
             return {"resourceTemplates": []}
         if method == "prompts/list":
@@ -264,15 +283,22 @@ class McpSession:
         name = params.get("name")
         if not isinstance(name, str) or not name:
             raise _RpcError(INVALID_PARAMS, "tools/call requires a tool name")
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments", {})
         if not isinstance(arguments, dict):
             raise _RpcError(INVALID_PARAMS, "tool arguments must be an object")
         if not self.endpoint.application.has_operation(name):
             raise _RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
         envelope = self.endpoint.application.execute(name, arguments)
+        envelope, images = split_images(envelope)
         self.endpoint.observed_calls.append({"name": name, "arguments": arguments, "result": envelope})
+        if envelope.get("ok") and name in {"inspect_reference", "add_reference"}:
+            asset_id = envelope["value"]["id"]
+            images.extend(image for image in self.endpoint.application.reference_resources()
+                          if image.metadata["id"] == asset_id
+                          and image.metadata["checksum"] == envelope["value"]["checksum"])
         return {
-            "content": [{"type": "text", "text": json.dumps(envelope, allow_nan=False)}],
+            "content": [{"type": "text", "text": json.dumps(envelope, allow_nan=False)},
+                        *(image.image_block() for image in images)],
             "structuredContent": envelope,
             "isError": not bool(envelope.get("ok")),
         }

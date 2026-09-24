@@ -21,6 +21,7 @@ LAYERS = {
     'integration': ['tests.test_export', 'tests.test_mcp'],
     'generic': [
         'tests.test_cad_model', 'tests.test_cad_export', 'tests.test_cad_assets', 'tests.test_cad_agent',
+        'tests.test_cad_hardening',
     ],
     'mcp': ['tests.test_mcp'],
     'acp': ['tests.test_acp'],

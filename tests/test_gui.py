@@ -23,6 +23,11 @@ class GuiTests(unittest.TestCase):
         self.factory = Mock(side_effect=Application)
         self.controller = Controller(application_factory=self.factory, background=False)
         self.window = MainWindow(self.controller)
+        # A tiling WM can ignore resize(), which would prevent the VTK resize
+        # assertions from exercising a size change. Keep X11 test windows under
+        # the test's control, as they are when running under bare Xvfb.
+        if self.qt.platformName() == 'xcb':
+            self.window.setWindowFlag(Qt.WindowType.X11BypassWindowManagerHint, True)
         self.window.show()
         self.qt.processEvents()
         self.addCleanup(self.window.close)

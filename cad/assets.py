@@ -38,6 +38,7 @@ class ReferenceImage:
             "width": self.width,
             "height": self.height,
             "checksum": self.checksum,
+            "image_uri": f"cad://references/{self.id}/{self.checksum}",
             "notes": self.notes,
             "camera_hint": self.camera_hint,
             "calibration": self.calibration,
@@ -66,8 +67,10 @@ def load_image(path: str, *, role: str, label: str | None, notes: str, camera_hi
 
 
 def image_size(data: bytes) -> tuple[str, int, int]:
-    if data.startswith(b"\x89PNG\r\n\x1a\n") and data[12:16] == b"IHDR":
+    if len(data) >= 24 and data.startswith(b"\x89PNG\r\n\x1a\n") and data[12:16] == b"IHDR":
         width, height = struct.unpack(">II", data[16:24])
+        if width <= 0 or height <= 0:
+            raise InvalidArgument("image dimensions must be positive")
         return "image/png", int(width), int(height)
     if data.startswith(b"\xff\xd8"):
         size = _jpeg_size(data)
@@ -109,6 +112,8 @@ def _jpeg_size(data: bytes) -> tuple[int, int] | None:
         if offset + 2 > len(data):
             return None
         length = struct.unpack(">H", data[offset:offset + 2])[0]
+        if length < 2 or offset + length > len(data):
+            return None
         if marker in {0xC0, 0xC1, 0xC2} and offset + 7 <= len(data):
             height, width = struct.unpack(">HH", data[offset + 3:offset + 7])
             return int(width), int(height)

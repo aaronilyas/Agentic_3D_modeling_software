@@ -136,8 +136,8 @@ class OccBackend:
         return self._require_solid(solid)
 
     def boolean(self, kind, left, right) -> object:
-        left = copy.deepcopy(left)
-        right = copy.deepcopy(right)
+        left = self.copy(left)
+        right = self.copy(right)
         try:
             if kind == "union":
                 result = left + right
@@ -160,18 +160,18 @@ class OccBackend:
             matrix[8], matrix[9], matrix[10],
         )
         gtrsf = gp_GTrsf(mat, gp_XYZ(matrix[3], matrix[7], matrix[11]))
-        builder = BRepBuilderAPI_GTransform(copy.deepcopy(shape).wrapped, gtrsf, True)
+        builder = BRepBuilderAPI_GTransform(self.copy(shape).wrapped, gtrsf, True)
         if not builder.IsDone():
             raise InvalidGeometry("transform could not be applied")
         return self._require_solid(bd.Shape.cast(builder.Shape()))
 
     def translate(self, shape, vector) -> object:
-        return self._require_solid(bd.Pos(*vector) * copy.deepcopy(shape))
+        return self._require_solid(bd.Pos(*vector) * self.copy(shape))
 
     def fillet(self, shape, radius, edge_ids=None, selector=None) -> object:
         if radius <= 0:
             raise InvalidGeometry("fillet radius must be greater than zero")
-        shape = copy.deepcopy(shape)
+        shape = self.copy(shape)
         edges = self._select_edges(shape, edge_ids, selector, min_length=radius * 2)
         try:
             result = bd.fillet(edges, radius)
@@ -182,7 +182,7 @@ class OccBackend:
     def chamfer(self, shape, distance, edge_ids=None, selector=None) -> object:
         if distance <= 0:
             raise InvalidGeometry("chamfer distance must be greater than zero")
-        shape = copy.deepcopy(shape)
+        shape = self.copy(shape)
         edges = self._select_edges(shape, edge_ids, selector, min_length=distance * 2)
         try:
             result = bd.chamfer(edges, distance)
@@ -193,7 +193,7 @@ class OccBackend:
     def shell(self, shape, thickness, face_ids=None) -> object:
         if thickness <= 0:
             raise InvalidGeometry("shell thickness must be greater than zero")
-        shape = copy.deepcopy(shape)
+        shape = self.copy(shape)
         try:
             if face_ids:
                 faces = self._select_faces(shape, face_ids)
@@ -228,7 +228,7 @@ class OccBackend:
     def mirror(self, shape, plane, origin=None, normal=None, keep_original=False) -> object:
         about = self._plane(plane, origin, normal)
         try:
-            mirrored = bd.mirror(copy.deepcopy(shape), about=about)
+            mirrored = bd.mirror(self.copy(shape), about=about)
         except Exception as exc:
             raise InvalidGeometry(str(exc) or "mirror failed") from exc
         if keep_original:
@@ -253,7 +253,7 @@ class OccBackend:
         direction = _unit(tuple(direction), "pattern axis")
         pieces = []
         axis = gp_Ax1(gp_Pnt(*origin), gp_Dir(*direction))
-        source = copy.deepcopy(shape)
+        source = self.copy(shape)
         for index in range(count):
             trsf = gp_Trsf()
             trsf.SetRotation(axis, index * 2.0 * math.pi / count)
@@ -350,6 +350,9 @@ class OccBackend:
         return {"vertices": vertices, "triangles": triangles, "units": "mm"}
 
     def copy(self, shape):
+        # build123d implements __deepcopy__ with BRepBuilderAPI_Copy. Retain an
+        # independent kernel shape for history and operations that may mutate
+        # their inputs. Sharing immutable shapes would require a stronger contract.
         return copy.deepcopy(shape)
 
     def export_step(self, shape, path: str) -> None:

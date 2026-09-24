@@ -165,7 +165,7 @@ class GenericModelTests(CadTestCase):
         self.ok("query_faces", ref=box["ref"])
         self.ok("rename", ref=box["ref"], name="renamed")
         report = self.ok("validate", scope="geometry", ref=box["ref"])
-        self.assertIn("STALE_SELECTION", [item["code"] for item in report["findings"]])
+        self.assertNotIn("STALE_SELECTION", [item["code"] for item in report["findings"]])
         self.assertTrue(report["geometry_ready"])
 
     def test_validation_is_non_mutating_and_splits_manufacturing(self):

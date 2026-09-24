@@ -108,14 +108,22 @@ TOOLS = {
         "description": "Fillet edges of a body. edge_ids require selection_revision equal to the current document revision. selector may be vertical or {kind: longest_vertical, count}.",
         "schema": _schema({
             "ref": _REF, "radius": _NUMBER, "edge_ids": {"type": "array", "items": _STRING},
-            "selector": {}, "selection_revision": _INT,
+            "selector": {"anyOf": [
+                {"type": "string", "enum": ["vertical", "longest_vertical", "longest"]},
+                _schema({"kind": {"type": "string", "enum": ["vertical", "longest_vertical", "longest"]},
+                         "count": {"type": "integer", "minimum": 1}}, ["kind"]),
+            ]}, "selection_revision": _INT,
         }, ["ref", "radius"]),
     },
     "chamfer": {
         "description": "Chamfer edges. Selection rules match fillet. distance is millimetres.",
         "schema": _schema({
             "ref": _REF, "distance": _NUMBER, "edge_ids": {"type": "array", "items": _STRING},
-            "selector": {}, "selection_revision": _INT,
+            "selector": {"anyOf": [
+                {"type": "string", "enum": ["vertical", "longest_vertical", "longest"]},
+                _schema({"kind": {"type": "string", "enum": ["vertical", "longest_vertical", "longest"]},
+                         "count": {"type": "integer", "minimum": 1}}, ["kind"]),
+            ]}, "selection_revision": _INT,
         }, ["ref", "distance"]),
     },
     "shell": {
@@ -181,12 +189,12 @@ TOOLS = {
         }),
     },
     "render_selection": {
-        "description": "Render a body and highlight face_ids from the same revision.",
+        "description": "Render a body and highlight face_ids from the same revision. Edge highlighting is unsupported.",
         "schema": _schema({
             "ref": _REF, "face_ids": {"type": "array", "items": _STRING},
-            "edge_ids": {"type": "array", "items": _STRING}, "selection_revision": _INT,
+            "selection_revision": _INT,
             "views": {"type": "array", "items": _STRING}, "width": _INT, "height": _INT,
-        }, ["ref", "selection_revision"]),
+        }, ["ref", "face_ids", "selection_revision"]),
     },
     "add_reference": {
         "description": "Copy a PNG or JPEG into the project as a reference image. role is front, side, top, perspective, detail, inspiration, or other.",
@@ -199,7 +207,7 @@ TOOLS = {
         "schema": _schema({}),
     },
     "inspect_reference": {
-        "description": "Reference metadata, checksum, pixel size, and calibration. scale is calibrated or unknown.",
+        "description": "Reference metadata, checksum, pixel size, calibration, and first-class MCP image content. scale is calibrated or unknown.",
         "schema": _schema({"id": _STRING}, ["id"]),
     },
     "set_calibration": {
@@ -211,10 +219,10 @@ TOOLS = {
         "schema": _schema({"id": _STRING, "pixel_length": _NUMBER}, ["id", "pixel_length"]),
     },
     "validate": {
-        "description": "Non-mutating geometry and manufacturing checks. ready=false is a finding, not a failed tool call. Profile names: geometry, fdm, sla, cnc, casting.",
+        "description": "Non-mutating geometry and lightweight manufacturing heuristics; not a machinability guarantee. ready=false is a finding, not a failed tool call. Profile names: geometry, fdm, sla, cnc, casting.",
         "schema": _schema({
             "scope": {"type": "string", "enum": ["geometry", "manufacturing", "all"]},
-            "profile": {}, "ref": _REF,
+            "profile": {"anyOf": [_STRING, _OBJECT]}, "ref": _REF,
         }),
     },
     "tessellate": {
@@ -245,7 +253,7 @@ TOOLS = {
     "refine": {
         "description": "Run the bounded inspect, model, measure, render, and refine loop. A successful CAD operation does not by itself complete the request.",
         "schema": _schema({
-            "request": _STRING, "goals": {"type": "array"}, "max_iterations": _INT,
+            "request": _STRING, "goals": {"type": "array", "items": _OBJECT}, "max_iterations": _INT,
         }, ["request"]),
     },
     "cancel_refine": {

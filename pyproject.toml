@@ -7,6 +7,7 @@ name = "agentic-jewelry-cad"
 version = "0.2.0"
 description = "Agent-first parametric CAD with an OpenCascade feature graph and an optional jewelry domain"
 readme = "README.md"
+keywords = ["cad", "agentic", "brep", "parametric", "opencascade"]
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26,<3",

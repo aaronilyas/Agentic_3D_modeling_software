@@ -80,3 +80,15 @@ def optional_name(value: object) -> str:
     if len(value) > 120:
         raise InvalidArgument("name is too long")
     return value.strip()
+
+
+def finite_tree(value) -> None:
+    """Reject non-finite values before replay or kernel execution."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise InvalidArgument("numbers must be finite")
+    if isinstance(value, dict):
+        for child in value.values():
+            finite_tree(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            finite_tree(child)

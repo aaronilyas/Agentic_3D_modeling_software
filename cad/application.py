@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import shutil
 import threading
 from contextlib import contextmanager
 
 from cad import exporting, project, validation
-from cad.agent import GoalPlanner, RefinementLoop
+from cad.agent import RefinementLoop
+from cad.planners import DeterministicPlanner
+from cad.planning import Planner
 from cad.assets import ReferenceImage, calibrate, checksum, load_image
 from cad.document import Document
+from cad.content import reference_resource
 from cad.errors import (
     ContractError,
     DependencyError,
@@ -20,14 +24,17 @@ from cad.errors import (
     InvalidMesh,
     MissingCapability,
     NotManufacturingReady,
-    StaleSelection,
     StaleValidation,
     UnknownReference,
 )
-from cad.features import Feature
+from cad.features import Feature, dependency_graph
+from cad.operations import EDITABLE
+from cad.geometry.protocol import GeometryBackend
+from cad.inspection import InspectionService, require_current_selection
 from cad.geometry.occ import OccBackend
 from cad.numbers import (
     finite_number,
+    finite_tree,
     optional_name,
     polygon,
     polyline3,
@@ -36,24 +43,7 @@ from cad.numbers import (
     vec2,
     vec3,
 )
-from cad.render import VIEWS, render_meshes
 from cad.replay import replay
-from cad.topology import adjacent_ids, assign_ids
-
-EDITABLE = {
-    "box": {"size", "origin"},
-    "cylinder": {"radius", "height", "origin"},
-    "sphere": {"radius", "center"},
-    "extrude": {"height"},
-    "revolve": {"angle_degrees"},
-    "fillet": {"radius"},
-    "chamfer": {"distance"},
-    "shell": {"thickness"},
-    "hole": {"diameter", "depth", "position", "direction", "through"},
-    "linear_pattern": {"spacing", "count", "direction"},
-    "circular_pattern": {"count"},
-}
-REF_KEYS = ("ref", "target", "left", "right")
 
 
 def _success(value: object) -> dict:
@@ -70,9 +60,11 @@ class _Fault:
 
 
 class Application:
-    def __init__(self, backend=None, *, blender_runner=None) -> None:
+    def __init__(self, backend: GeometryBackend | None = None, *, blender_runner=None, planner: Planner | None = None) -> None:
         self.backend = backend if backend is not None else OccBackend()
-        self.document = Document()
+        self.document = Document(copy_shape=self.backend.copy)
+        self.inspection = InspectionService(self.document, self.backend)
+        self.planner = planner if planner is not None else DeterministicPlanner()
         self._blender_runner = blender_runner
         self._closed = False
         self._lock = threading.RLock()
@@ -90,6 +82,11 @@ class Application:
             "save_project", "open_project", "refine", "cancel_refine",
         )}
 
+    def reference_resources(self) -> tuple:
+        """Read immutable image bytes with detached metadata under the command lock."""
+        with self._lock:
+            return tuple(reference_resource(asset) for asset in self.document.assets)
+
     def operation_names(self) -> tuple[str, ...]:
         return tuple(self._operations)
 
@@ -97,6 +94,10 @@ class Application:
         return isinstance(name, str) and name in self._operations
 
     def execute(self, operation: str, arguments: dict | None = None) -> dict:
+        # Refinement holds the document lock. Cancellation only sets a thread-safe
+        # event, so another MCP session must be able to request it during the run.
+        if operation == "cancel_refine":
+            return self._execute(operation, arguments)
         with self._lock:
             return self._execute(operation, arguments)
 
@@ -116,7 +117,9 @@ class Application:
         if handler is None:
             return _failure("MISSING_CAPABILITY", f"operation {operation!r} is not implemented")
         try:
-            return _success(handler(arguments))
+            finite_tree(arguments)
+            # Callers cannot retain aliases into committed metadata or parameters.
+            return _success(copy.deepcopy(handler(copy.deepcopy(arguments))))
         except ContractError as exc:
             return _failure(exc.code, exc.message)
         except (ArithmeticError, OverflowError) as exc:
@@ -180,6 +183,7 @@ class Application:
             "references": list(self.document.references()),
             "names": dict(self.document.names),
             "features": [feature.to_public() for feature in self.document.features],
+            "dependencies": {key: list(value) for key, value in dependency_graph(self.document.features).items()},
             "sketches": [
                 {"id": feature_id, "profile": profile}
                 for feature_id, profile in self.document.sketches.items()
@@ -237,14 +241,17 @@ class Application:
         for feature in self.document.features:
             if feature.output_ref == ref:
                 continue
-            if ref in _dependency_refs(feature):
+            if ref in feature.input_refs:
                 raise DependencyError(f"{feature.id} still depends on {ref}")
         feature_id = self.document.peek("feature")
-        features = [feature for feature in self.document.features if feature.output_ref != ref]
+        removed_ids = {feature.id for feature in self.document.features if feature.output_ref == ref}
+        features = [feature for feature in self.document.features if feature.output_ref != ref
+                    and not (feature.op == "rename" and feature.params.get("ref") == ref)]
+        names = {key: value for key, value in self.document.names.items() if key not in removed_ids | {ref}}
         features.append(Feature(feature_id, "delete", {"ref": ref}))
         solids = {key: value for key, value in self.document.solids.items() if key != ref}
         self._fail_if_armed("delete", "after_geometry")
-        self.document.commit(features=features, solids=solids, consume={"feature": 1})
+        self.document.commit(features=features, solids=solids, names=names, consume={"feature": 1})
         return {"ref": ref, "revision": self.document.revision}
 
     def _op_undo(self, _arguments: dict) -> dict:
@@ -543,9 +550,6 @@ class Application:
             findings.extend(validation.validate_shape(
                 self.document.resolve(ref), self.backend, use_rules, label=label,
             ))
-        stale = validation.stale_selection_finding(self.document.pinned_selection, self.document.revision)
-        if stale is not None:
-            findings.append(stale)
         return validation.report(self.document.revision, rules, findings, scope)
 
     def _op_list_export_formats(self, _arguments: dict) -> dict:
@@ -627,7 +631,7 @@ class Application:
             raise InvalidArgument("request must be a string")
         iterations = arguments.get("max_iterations", 12)
         self._cancel.clear()
-        loop = RefinementLoop(self, GoalPlanner(), cancel_event=self._cancel)
+        loop = RefinementLoop(self, self.planner, cancel_event=self._cancel)
         return loop.run(request, goals=arguments.get("goals"), max_iterations=iterations)
 
     def _op_cancel_refine(self, _arguments: dict) -> dict:
@@ -677,81 +681,13 @@ class Application:
         return self._replace(op, params, shape, ref, op)
 
     def _require_current_selection(self, arguments: dict, ids) -> None:
-        if not ids:
-            return
-        revision = arguments.get("selection_revision")
-        if revision != self.document.revision:
-            raise StaleSelection(
-                f"selection revision {revision} does not match document revision {self.document.revision}"
-            )
+        require_current_selection(self.document.revision, arguments, ids)
 
     def _query(self, ref: str, kind: str, arguments: dict) -> dict:
-        point = vec3(arguments["nearest"], "nearest") if arguments.get("nearest") is not None else None
-        raw = self.backend.query(self.document.resolve(ref), point)
-        faces = assign_ids("face", raw["faces"])
-        edges = assign_ids("edge", raw["edges"])
-        adjacent_ids(faces, edges)
-        self.document.pinned_selection = {
-            "revision": self.document.revision,
-            "ref": ref,
-            "face_ids": [face["id"] for face in faces],
-            "edge_ids": [edge["id"] for edge in edges],
-        }
-        records = faces if kind == "faces" else edges
-        geom = arguments.get("geom")
-        if geom not in {None, "any", "plane", "cylinder", "sphere", "torus", "cone", "line", "circle"}:
-            raise InvalidArgument("geom filter is not supported")
-        if geom not in {None, "any"}:
-            records = [record for record in records if record["geom"] == geom]
-        order = arguments.get("order")
-        if order == "largest":
-            records = sorted(records, key=lambda item: item.get("area", item.get("length", 0.0)), reverse=True)
-        elif order == "smallest":
-            records = sorted(records, key=lambda item: item.get("area", item.get("length", 0.0)))
-        elif arguments.get("nearest") is not None:
-            records = sorted(records, key=lambda item: item.get("distance", 0.0))
-        limit = arguments.get("limit")
-        if limit is not None:
-            records = records[: positive_int(limit, "limit")]
-        for record in records:
-            record.pop("index", None)
-        return {
-            "ref": ref,
-            "revision": self.document.revision,
-            "units": "mm",
-            kind: records,
-        }
+        return self.inspection.query(ref, kind, arguments)
 
     def _render(self, arguments: dict, *, highlight: bool) -> dict:
-        width = int(arguments.get("width", 160))
-        height = int(arguments.get("height", 120))
-        if width < 32 or height < 32 or width > 512 or height > 512:
-            raise InvalidArgument("render size must be between 32 and 512")
-        views = arguments.get("views") or (["isometric"] if highlight else list(VIEWS))
-        if not isinstance(views, list) or not views:
-            raise InvalidArgument("views must be a nonempty list")
-        refs = [arguments["ref"]] if arguments.get("ref") else list(self.document.references())
-        for ref in refs:
-            self.document.resolve(ref)
-        chord = positive_number(arguments.get("chord_tolerance", 0.25), "chord_tolerance")
-        meshes = []
-        for ref in refs:
-            mesh = self.backend.tessellate(self.document.resolve(ref), chord)
-            meshes.append(mesh)
-        if highlight:
-            face_ids = arguments.get("face_ids") or []
-            edge_ids = arguments.get("edge_ids") or []
-            if not face_ids and not edge_ids:
-                raise InvalidArgument("render_selection requires face_ids or edge_ids")
-            self._require_current_selection(arguments, face_ids or edge_ids)
-            if face_ids:
-                if len(refs) != 1:
-                    raise InvalidArgument("render_selection needs a ref")
-                selected = self.backend.tessellate_faces(self.document.resolve(refs[0]), face_ids, chord)
-                selected["highlight"] = True
-                meshes.append(selected)
-        images = render_meshes(meshes, views, width, height)
-        return {"revision": self.document.revision, "units": "mm", "views": images}
+        return self.inspection.render(arguments, highlight=highlight)
 
     def _authorize_export(self, ref: str, report: object, mode: str) -> None:
         rules = validation.resolve_profile("geometry")
@@ -766,9 +702,12 @@ class Application:
             raise StaleValidation()
         if not report.get("ready"):
             raise NotManufacturingReady()
+        if report.get("scope") not in {"manufacturing", "all"}:
+            raise InvalidArgument("manufacturing export requires manufacturing validation")
         rules = report.get("rules")
         if not isinstance(rules, dict):
             raise InvalidArgument("validation report has no rules")
+        rules = validation.resolve_profile(rules)
         live = validation.validate_shape(self.document.resolve(ref), self.backend, rules, label=ref)
         if any(item["severity"] == "error" for item in live):
             raise NotManufacturingReady(live[0]["message"])
@@ -848,12 +787,3 @@ def _matrix(value: object) -> list[float]:
     if abs(det) <= 1e-12:
         raise InvalidArgument("matrix is singular")
     return numbers
-
-
-def _dependency_refs(feature: Feature) -> list[str]:
-    refs = []
-    for key in REF_KEYS:
-        value = feature.params.get(key)
-        if isinstance(value, str):
-            refs.append(value)
-    return refs

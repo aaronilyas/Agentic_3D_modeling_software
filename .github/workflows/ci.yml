@@ -28,3 +28,25 @@ jobs:
         run: python -m tests.run integration
       - name: Generic CAD
         run: python -m tests.run generic
+
+  gui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install display libraries and GUI extra
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libegl1 libgl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -e '.[gui]'
+      - name: Generic offscreen widgets
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest tests.test_cad_gui -v
+      - name: Jewelry Qt and VTK integration
+        env:
+          QT_QPA_PLATFORM: xcb
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: xvfb-run -a python -m unittest tests.test_gui -v

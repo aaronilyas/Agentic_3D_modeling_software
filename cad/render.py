@@ -96,7 +96,7 @@ def _rasterize(meshes, forward, up, width, height, highlight=None) -> np.ndarray
             normal = -normal
         shade = max(0.22, float(np.dot(normal, light)))
         shaded = np.clip(color * shade, 0, 255)
-        _fill(image, zbuf, screen, cam[:, 2], shaded)
+        _fill(image, zbuf, screen, -cam[:, 2] - (1e-7 if np.array_equal(color, HIGHLIGHT) else 0), shaded)
     return image
 
 

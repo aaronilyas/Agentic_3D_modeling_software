@@ -22,7 +22,12 @@ def _vec(values) -> tuple:
 
 
 def assign_ids(kind: str, records: list[dict]) -> list[dict]:
-    """Assign deterministic ids from geometry, then ordinal among identical keys."""
+    """Geometry fingerprints plus an ordinal, scoped to a queried revision.
+
+    Equal geometric keys use kernel index as a tie-breaker. This is stable for
+    repeated inspection of one shape, not persistent naming after recomputation.
+    Preserve version-1 fingerprints for stored feature selections.
+    """
     decorated = []
     for record in records:
         key = (
@@ -35,12 +40,17 @@ def assign_ids(kind: str, records: list[dict]) -> list[dict]:
         decorated.append((key, record))
     decorated.sort(key=lambda item: (item[0], item[1].get("index", 0)))
     assigned = []
+    used = set()
     for ordinal, (key, record) in enumerate(decorated):
         payload = f"{kind}|{ordinal}|{key}".encode("utf-8")
         digest = hashlib.sha1(payload).hexdigest()[:12]
         public = dict(record)
         public["ordinal"] = ordinal
-        public["id"] = f"{kind}-{digest}"
+        identifier = f"{kind}-{digest}"
+        if identifier in used:
+            identifier += f"-{ordinal}"
+        used.add(identifier)
+        public["id"] = identifier
         assigned.append(public)
     return assigned
 

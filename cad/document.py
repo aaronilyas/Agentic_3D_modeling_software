@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from typing import Callable
 
 from cad.errors import EmptyHistory, UnknownFeature, UnknownReference
 from cad.features import Feature
@@ -17,19 +18,18 @@ class DocumentState:
     names: dict
     assets: list
     settings: dict
-    pinned_selection: dict | None
     revision: int
 
 
 @dataclass
 class Document:
+    copy_shape: Callable[[object], object] = field(default=copy.deepcopy, repr=False, kw_only=True)
     features: list[Feature] = field(default_factory=list)
     solids: dict = field(default_factory=dict)
     sketches: dict = field(default_factory=dict)
     names: dict = field(default_factory=dict)
     assets: list = field(default_factory=list)
     settings: dict = field(default_factory=lambda: {"units": "mm", "axes": "right-handed-z-up"})
-    pinned_selection: dict | None = None
     revision: int = 0
     _serials: dict = field(default_factory=lambda: {"feature": 1, "body": 1, "asset": 1})
     _undo: list = field(default_factory=list)
@@ -60,12 +60,11 @@ class Document:
     def capture(self) -> DocumentState:
         return DocumentState(
             features=copy.deepcopy(self.features),
-            solids={key: copy.deepcopy(value) for key, value in self.solids.items()},
+            solids={key: self.copy_shape(value) for key, value in self.solids.items()},
             sketches=copy.deepcopy(self.sketches),
             names=copy.deepcopy(self.names),
             assets=copy.deepcopy(self.assets),
             settings=copy.deepcopy(self.settings),
-            pinned_selection=copy.deepcopy(self.pinned_selection),
             revision=self.revision,
         )
 
@@ -76,7 +75,6 @@ class Document:
         self.names = state.names
         self.assets = state.assets
         self.settings = state.settings
-        self.pinned_selection = state.pinned_selection
 
     def commit(
         self,
@@ -138,8 +136,7 @@ class Document:
         self.names = names
         self.assets = assets
         self.settings = settings
-        self._serials = dict(serials)
-        self.pinned_selection = None
+        self._serials = {kind: max(self._serials[kind], serials[kind]) for kind in self._serials}
         self.revision += 1
 
     def clear(self) -> None:
@@ -148,7 +145,6 @@ class Document:
         self.sketches.clear()
         self.names.clear()
         self.assets.clear()
-        self.pinned_selection = None
         self._undo.clear()
         self._redo.clear()
         self.revision = 0
